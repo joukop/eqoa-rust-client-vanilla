@@ -75,8 +75,8 @@ mod fog;
 mod frames;
 mod group;
 mod guild;
-// the music off a disc read asynchronously: a page's (natively, its tests)
-#[cfg(any(target_arch = "wasm32", test))]
+// the music read whole before it plays: off a page's disc, read
+// asynchronously, and natively on a thread of its own
 mod bgm;
 mod bindpage;
 mod binds;
@@ -727,7 +727,7 @@ fn login(host: &str, user: &str, pass: &str) -> Result<(net::session::Session, n
     let port = |v: &str, d: u16| std::env::var(v).ok().and_then(|p| p.parse().ok()).unwrap_or(d);
     let l = net::auth::login((host, port("EQOA_AUTH_PORT", 9735)), user, pass)?;
     eprintln!("auth: account {} status {} features {:#x}", l.account, l.status, l.game_features);
-    let server = std::net::ToSocketAddrs::to_socket_addrs(&(host, port("EQOA_GAME_PORT", 10070)))?.next().ok_or("no address")?;
+    let server = net::addr::resolve(host, port("EQOA_GAME_PORT", 10070))?;
     let mut s = Session::connect(server, user, l.token)?;
     let t = std::time::Instant::now();
     while t.elapsed() < std::time::Duration::from_secs(30) {
