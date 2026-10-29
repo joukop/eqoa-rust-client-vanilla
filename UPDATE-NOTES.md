@@ -5,6 +5,24 @@ in the same push as the changes it describes. The dev release's page shows them
 (`release/notes.sh`, from `.github/workflows/dev.yml`); an edit to this file alone
 is put on the page by `.github/workflows/notes.yml`.
 
+## 2026-10-29 · Longer passwords at the login
+- The Station login, the new-account page and the change-password page now take a password of up
+  to 31 characters, the most the login can send. They stopped at 15, so a longer password made on
+  a server's website could not be typed in.
+
+## 2026-10-29 · A trade no longer opens over your inventory
+- When the other player accepts your trade while you have your inventory (or any other part of the
+  Start menu) open, the menu now closes and the trade window opens on its own, as on the PS2. Both
+  used to stay up, taking your button presses, so an item you picked could look as if it had been
+  copied.
+- Opening the Start menu after that shows the main menu, not the inventory it was closed over.
+
+## 2026-10-29 · The aiming crosshair reaches no farther than a tap
+- Holding R1 or L1 (Tab or ` on the keyboard) to aim with the crosshair now targets only what a
+  tap of the same button could: creatures within 200 of the camera. It used to take whatever lay
+  nearest the crosshair however far off, even creatures too far away to be drawn, and with a long
+  NPC/PC View Distance out to 1,000.
+
 ## 2026-10-26 · A voice chat window
 - Press O (or type /voice in the chat) for the voice chat window: turn voice chat on or off and
   pick Push to Talk or Open Mic, see whether you are connected and how loud your microphone is,
