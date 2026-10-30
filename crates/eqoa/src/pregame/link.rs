@@ -149,7 +149,8 @@ pub fn session(host: &str, port: u16, user: &str, token: [u8; 32]) -> Opening {
         let h = host.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let r = std::net::ToSocketAddrs::to_socket_addrs(&(h.as_str(), port)).map_err(|e| format!("{h}: {e}")).and_then(|mut a| a.next().ok_or_else(|| format!("{h}: no address")));
+            // its IPv4 address when it has one (`net::addr`)
+            let r = net::addr::resolve(&h, port).map_err(|e| format!("{h}: {e}"));
             let _ = tx.send(r);
         });
         Opening::Resolving { addr: Later::Thread(rx), user: user.to_string(), token }
@@ -160,9 +161,10 @@ pub fn session(host: &str, port: u16, user: &str, token: [u8; 32]) -> Opening {
 
 /// SETUP's patcher (`patcher::run`) against the player's server, into that
 /// server's own folder (`servers::folder`): natively on a thread of its own
-/// (`patcher::native`), the window reading the status it returns each
-/// frame. None where it cannot run: in a page (a page cannot reach the
-/// patch port), and in a run that keeps nothing (the test commands).
+/// (`patcher::native`), in a page on a task over the server's web server
+/// (`patcher::web`: a page cannot reach the patch port), the window reading
+/// the status it returns each frame. None in a run that keeps nothing (the
+/// test commands, a page without storage).
 pub fn patch(host: &str, manifest: &str) -> Option<crate::patcher::Shared> {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -180,8 +182,10 @@ pub fn patch(host: &str, manifest: &str) -> Option<crate::patcher::Shared> {
     }
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (host, manifest);
-        None
+        if !crate::servers::keeps() {
+            return None;
+        }
+        Some(crate::patcher::web::start(host, manifest))
     }
 }
 
@@ -258,7 +262,7 @@ mod native {
             let (tx_in, from) = mpsc::channel::<Got>();
             let host = host.to_string();
             std::thread::spawn(move || {
-                let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port)).ok().and_then(|mut a| a.next());
+                let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port)).ok().and_then(net::addr::pick);
                 let Some(addr) = addr else {
                     let _ = tx_in.send(Got::Failed(format!("{host}: no address")));
                     return;

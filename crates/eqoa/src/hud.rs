@@ -34,16 +34,6 @@ pub struct HudState {
     pub target_info: Option<u8>,
     /// The player has targeted themselves and has +0x2C (`m_p2C > 0`).
     pub self_targeted_flag: bool,
-    /// Target of Target (the Extended page's, the client's own): the name of
-    /// whom the target targets (`Play::target_of_target`).
-    pub target_of_target: Option<String>,
-    /// Mana Bars (the Extended page's, the client's own): the target's power
-    /// of 255, when there is one to show (`Play::bar_power`).
-    pub target_power: Option<u8>,
-    /// The target of target's health of 255 (its +0x19, while it is in
-    /// view) and power (Mana Bars), drawn right of its bar.
-    pub tot_hp: Option<u8>,
-    pub tot_power: Option<u8>,
     /// `HasPet()`: the pet, when the player has one.
     pub pet: Option<PetState>,
     /// `GetP2BE4C()`: the group's size (0 out of one).
@@ -52,18 +42,9 @@ pub struct HudState {
     pub group: Vec<MemberState>,
     /// Every member, for `DrawPatch`.
     pub patches: Vec<PatchMember>,
-    /// The map's waypoint in this world (x, z): a dot on the compass's rim
-    /// at any distance, the client's own (`map::Map::click`).
-    pub waypoint: Option<[f32; 2]>,
-    /// The minimap is up (`map::mini`, drawn by the map's own layer under
-    /// the HUD): its place noted for a pointer, which opens the map there.
-    pub minimap: bool,
-    /// The quest tracker's quests (`tracker`), none while it is not up: drawn
-    /// under the minimap, a pointer on it opens the quest journal.
-    pub tracker: Vec<net::session::TrackedQuest>,
-    /// The mic badge while voice is on, where the minimap could be
-    /// (`voicewnd::Badge`).
-    pub voice: Option<crate::voicewnd::Badge>,
+    /// The live client's duel (0x1502 sub 8): its centre while the duel is on
+    /// and in the player's world, for `DrawPatch`'s orange patch (`duel.rs`).
+    pub duel: Option<[f32; 3]>,
     /// `m_selfId` and `m_target`.
     pub self_id: Option<u32>,
     pub target: u32,
@@ -71,12 +52,6 @@ pub struct HudState {
     pub camera: [f32; 3],
     /// The scene's clock, in ms.
     pub time_ms: i64,
-    /// Voice chat (`voice`): each one the player may hear, its level and
-    /// whether it is muted. A groupmate's mark is on its bar; the room's
-    /// speakers who are not groupmates are listed right of the player's
-    /// frame. (The player's own, the microphone's badge, is the voice
-    /// window's: `voicewnd`.)
-    pub voice_marks: Vec<crate::voice::Mark>,
 }
 
 /// What `DrawPatch` reads of a group member: its index in the group (which
@@ -98,8 +73,6 @@ pub struct MemberState {
     pub name: String,
     pub is_target: bool,
     pub hp: Option<(u8, bool, bool)>,
-    /// Mana Bars: its power of 255 when there is one to show.
-    pub power: Option<u8>,
 }
 
 /// What `DrawPet` reads: `GetPetName`, whether the pet is the target, and
@@ -142,133 +115,18 @@ pub struct Hud {
 
 /// What a pointer finds on the HUD's left side (`Hud::pick`): the player's
 /// own frame, a group member's bar (its id), the pet's bar. Each is what L1's
-/// cycle targets in turn. And the bug report's button, and the Target of
-/// Target bar (the game's Assist Target asked).
+/// cycle targets in turn. And the bug report's button.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pick {
     Me,
     Member(u32),
     Pet,
     Report,
-    TargetsTarget,
-    /// the minimap (`map::mini`): the map opened
-    Minimap,
-    /// the quest tracker (`tracker`): the quest journal opened
-    Quests,
-    /// the mic badge (`voicewnd::BADGE`): the voice window opened
-    Voice,
-    /// a voice mark: that one (its voice id) muted, or heard again
-    VoiceMark(u32),
 }
-
-/// The Target of Target bar's place (the frame's, out at a wide window's
-/// left and down a tall one's bottom with the target's bar) and width: just
-/// above the "Target" title (348), in the HUD's own column with its health and
-/// power under it as a group member's (46 high, to 346), below a whole group's
-/// bars and its pet's (a group of four and a pet end at 283). Right of the
-/// title (200, 348) it was under the chat box's left half, which reaches 191
-/// and grows up past 340 with five lines (F3 20261026-053926: "concealed
-/// behind a full chat log, maybe just above the target?").
-const TOT_AT: [i32; 2] = [20, 300];
-const TOT_WIDTH: i32 = 174;
 
 /// Where `DrawGroup` starts the group's bars and `DrawTarget` the target's.
 const GROUP_AT: [i32; 2] = [20, 93];
 const TARGET_AT: [i32; 2] = [20, 348];
-
-/// A groupmate's voice mark on its bar: right of its gauges and its status
-/// icons (65 to 125 in), on their row.
-const VOICE_ON_BAR: [i32; 2] = [152, 27];
-/// The room's speakers who are not groupmates: a list right of the player's
-/// frame (which ends at 200), the most at once, a row's height.
-const ROOM_SPEAKERS_AT: [i32; 2] = [210, 20];
-const ROOM_SPEAKERS_MOST: usize = 4;
-const ROOM_SPEAKER_ROW: i32 = 15;
-
-/// A voice mark: three bars, 13 wide and 10 high from `at`, lit green by
-/// the voice's level (one to three while it speaks), grey while it is
-/// quiet, red while muted, each on a dark edge so it reads on any ground.
-fn draw_voice_mark(vui: &Vui, ui: &mut UiRaster, at: [i32; 2], level: f32, muted: bool) {
-    let lit = voice_bars_lit(level);
-    for i in 0..3 {
-        let h = 4 + 3 * i as i32;
-        let x = at[0] + 5 * i as i32;
-        let (top, bottom) = (at[1] + 10 - h, at[1] + 10);
-        vui.fill_rectangle(ui, [[x - 1, top - 1], [x + 4, bottom + 1]], [0.0, 0.0, 0.0, 0.55]);
-        let c = if muted {
-            [0.92, 0.28, 0.22, 0.9]
-        } else if i < lit {
-            [0.38, 0.96, 0.44, 1.0]
-        } else {
-            [0.78, 0.78, 0.78, 0.5]
-        };
-        vui.fill_rectangle(ui, [[x, top], [x + 3, bottom]], c);
-    }
-}
-
-/// How many of a mark's three bars are lit at `level`: none below
-/// `voice::SPEAKING`, then one to three as it rises.
-fn voice_bars_lit(level: f32) -> usize {
-    if level <= crate::voice::SPEAKING {
-        return 0;
-    }
-    1 + (((level - crate::voice::SPEAKING) / (1.0 - crate::voice::SPEAKING)) * 3.0).clamp(0.0, 2.0) as usize
-}
-
-/// Whether a roster's name is a group member's: the demo's carry " (demo)".
-fn same_name(voice: &str, member: &str) -> bool {
-    let v = voice.strip_suffix(" (demo)").unwrap_or(voice);
-    crate::voice::ids::fold(v) == crate::voice::ids::fold(member)
-}
-
-/// A gauge in `DrawGauge`'s frame (136): its fill's art (7 health, 9
-/// power, the player's own), where, lit or dimmed, and how full.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Gauge {
-    bar: i32,
-    at: [i32; 2],
-    lit: bool,
-    v: f32,
-}
-
-/// Mana Bars on the group's bars (the client's own, the game drawing no one's
-/// power but the player's): each member's power, where there is one, under
-/// its health as the player's own frame stacks them (10 below), lit as its
-/// health is. A member's bar is 46 high and the next 48 on (`DrawGroup`).
-fn member_gauges(s: &HudState) -> Vec<Gauge> {
-    s.group
-        .iter()
-        .enumerate()
-        .filter_map(|(k, m)| {
-            let at = [GROUP_AT[0] + 10, GROUP_AT[1] + 48 * k as i32 + 35];
-            m.power.map(|p| Gauge { bar: 9, at, lit: m.is_target, v: p as f32 / 255.0 })
-        })
-        .collect()
-}
-
-/// Mana Bars on the target's bar, under its health (`DrawTarget`'s, 25
-/// below the bar) and above the report's button, and Target of Target's
-/// health and power under its bar, as a group member's are (25 and 35
-/// below it): each where there is one to show, the target of target's only
-/// with its bar.
-fn target_gauges(s: &HudState) -> Vec<Gauge> {
-    let mut out = Vec::new();
-    if s.target_name.is_none() {
-        return out;
-    }
-    if let Some(p) = s.target_power {
-        out.push(Gauge { bar: 9, at: [TARGET_AT[0] + 10, TARGET_AT[1] + 60], lit: true, v: p as f32 / 255.0 });
-    }
-    if s.target_of_target.is_some() {
-        let at = [TOT_AT[0] + 10, TOT_AT[1] + 25];
-        for (k, (bar, v)) in [(7, s.tot_hp), (9, s.tot_power)].into_iter().enumerate() {
-            if let Some(v) = v {
-                out.push(Gauge { bar, at: [at[0], at[1] + 10 * k as i32], lit: true, v: v as f32 / 255.0 });
-            }
-        }
-    }
-    out
-}
 
 impl Hud {
     pub fn new() -> Self {
@@ -355,10 +213,6 @@ impl Hud {
         draw_gauge(vui, ui, 152, 151, [p[0], p[1] + 10], true, part);
         draw_gauge(vui, ui, 8, 136, p, true, v);
         self.draw_group(vui, ui, GROUP_AT, s);
-        self.draw_room_speakers(vui, ui, s);
-        for g in member_gauges(s) {
-            draw_gauge(vui, ui, g.bar, 136, g.at, g.lit, g.v);
-        }
         let y = GROUP_AT[1] + ((s.group_count - 1) * 48).max(0);
         self.draw_pet(vui, ui, [20, y], s);
         ui.ui.vertical = Vertical::Bottom;
@@ -368,44 +222,7 @@ impl Hud {
             crate::ui::chat_strip(vui, ui, [p[0] + 2, p[1]], [203, 125]);
         }
         self.draw_target(vui, ui, TARGET_AT, s);
-        self.draw_target_of_target(vui, ui, TOT_AT, s);
-        for g in target_gauges(s) {
-            draw_gauge(vui, ui, g.bar, 136, g.at, g.lit, g.v);
-        }
         self.draw_report(vui, ui, [20, 421]);
-        // the minimap's place, out at a wide window's right and up a tall
-        // one's top with the quick menus (`map::mini::FRAME`)
-        if s.minimap {
-            ui.ui.anchor = Anchor::Right;
-            ui.ui.vertical = Vertical::Top;
-            self.note(ui, crate::map::mini::FRAME, Pick::Minimap);
-        }
-        // the quest tracker under it, placed the same way (`tracker`)
-        if let Some(r) = crate::tracker::draw(ui, &s.tracker) {
-            self.note(ui, r, Pick::Quests);
-        }
-        // the mic badge left of the minimap's foot, placed the same way
-        if let Some(b) = &s.voice {
-            ui.ui.anchor = Anchor::Right;
-            ui.ui.vertical = Vertical::Top;
-            crate::voicewnd::draw_badge(vui, ui, b, s.time_ms);
-            self.note(ui, crate::voicewnd::BADGE, Pick::Voice);
-        }
-    }
-
-    /// Target of Target (the Extended page's, the client's own): a second
-    /// bar above the target's, its art, glowing with it, the name of whom
-    /// the target targets in it as the group's bars hold their names; none
-    /// without a target or a name. A pointer on it asks the game's Assist
-    /// Target (`Pick::TargetsTarget`).
-    fn draw_target_of_target(&mut self, vui: &Vui, ui: &mut UiRaster, at: [i32; 2], s: &HudState) {
-        let Some(name) = s.target_of_target.as_deref().filter(|_| s.target_name.is_some()) else { return };
-        self.note(ui, [at[0], at[1], at[0] + TOT_WIDTH, at[1] + vui.entry(26).uv1[1]], Pick::TargetsTarget);
-        vui.blit_bar(ui, &[], [0.0; 4], at, 25, 26, TOT_WIDTH, 3, self.glow0, 0, true);
-        let mut w = vi::ui::Window::default();
-        w.init(vui, ui, [at[0] + TOT_WIDTH / 2, at[1] + 12], TOT_WIDTH - 14, 1, 0);
-        w.open(true);
-        w.text_box(vui, ui, &wide(name), 0, 0, TOT_WIDTH - 14, 1, [0.0, 0.0, 0.0, self.glow0], 10);
     }
 
     /// The bug report (F3, `report`) as a button under the target's bar:
@@ -445,32 +262,9 @@ impl Hud {
                     vui.blit_ex(ui, 119, p, 3, glow, 0);
                 }
             }
-            // voice chat's: the member's mark while it is in voice, a click
-            // on it muting it (`Pick::VoiceMark`)
-            if let Some(v) = s.voice_marks.iter().find(|v| v.group && same_name(&v.name, &m.name)) {
-                let at = [start[0] + VOICE_ON_BAR[0], start[1] + VOICE_ON_BAR[1]];
-                draw_voice_mark(vui, ui, at, v.level, v.muted);
-                self.note(ui, [at[0] - 3, at[1] - 3, at[0] + 16, at[1] + 13], Pick::VoiceMark(v.peer));
-            }
             p = [start[0], start[1] + 48];
         }
         self.glow1_on = if glowing { 1 } else { -1 };
-    }
-
-    /// The room's speakers who are not groupmates (whose bars show theirs):
-    /// each a mark and its name, right of the player's frame, while it speaks;
-    /// a click mutes it.
-    fn draw_room_speakers(&mut self, vui: &Vui, ui: &mut UiRaster, s: &HudState) {
-        let speaking = s.voice_marks.iter().filter(|v| v.room && !v.group && (v.level > crate::voice::SPEAKING || v.muted && v.level > 0.0)).take(ROOM_SPEAKERS_MOST);
-        for (k, v) in speaking.enumerate() {
-            let at = [ROOM_SPEAKERS_AT[0], ROOM_SPEAKERS_AT[1] + k as i32 * ROOM_SPEAKER_ROW];
-            draw_voice_mark(vui, ui, at, v.level, v.muted);
-            let mut w = vi::ui::Window::default();
-            w.init(vui, ui, [at[0] + 18 + 75, at[1] + 5], 150, 1, 0);
-            w.open(true);
-            w.text_box(vui, ui, &wide(&v.name), 0, 0, 150, 1, [0.62, 0.84, 1.0, if v.muted { 0.5 } else { 1.0 }], 2);
-            self.note(ui, [at[0] - 3, at[1] - 3, at[0] + 170, at[1] + 13], Pick::VoiceMark(v.peer));
-        }
     }
 
     /// `DrawPet`: the bar, glowing while the pet is the target, its name,
@@ -567,27 +361,14 @@ impl Hud {
     /// out from (39, 55) at its bearing from the camera's heading, in its
     /// index's colour (1 green, 2 blue, 3 cyan, the rest yellow); the
     /// target's is off for the last 150 ms of every 1.5 s, counted from the
-    /// first call with the art. The map's waypoint goes on the rim the same
-    /// way, magenta, at any distance (`waypoint_point`).
+    /// first call with the art.
     fn draw_patch(&mut self, ui: &mut UiRaster, s: &HudState) {
         let Some(tex) = ui.assets.surface(icon_id("Patch_Art")) else { return };
         let start = *self.patch_start.get_or_insert(s.time_ms);
         let phase = (s.time_ms - start) % 1500;
         let (uv, size, tex_size) = ([3.0f32, 3.0], [10, 10], 16.0f32);
-        for m in &s.patches {
-            if Some(m.id) == s.self_id || (phase > 1350 && s.target == m.id) {
-                continue;
-            }
-            let Some(at) = m.pos else { continue };
-            let d = [at[0] - s.camera[0], at[1] - s.camera[1], at[2] - s.camera[2]];
-            let Some(p) = patch_point(s.heading, d) else { continue };
+        let mut patch = |p: [f32; 2], color: [f32; 4]| {
             let (hx, hy) = ((size[0] >> 1) as f32, (size[1] >> 1) as f32);
-            let color = match m.index {
-                1 => [0.0, 1.0, 0.0, 1.0],
-                2 => [0.0, 0.0, 1.0, 1.0],
-                3 => [0.0, 1.0, 1.0, 1.0],
-                _ => [1.0, 1.0, 0.0, 1.0],
-            };
             let (u0, v0) = (uv[0] / tex_size, uv[1] / tex_size);
             let (u1, v1) = ((uv[0] + size[0] as f32) / tex_size, (uv[1] + size[1] as f32) / tex_size);
             ui.ui.push(Quad {
@@ -598,19 +379,27 @@ impl Hud {
                 color,
                 clip: None,
             });
+        };
+        for m in &s.patches {
+            if Some(m.id) == s.self_id || (phase > 1350 && s.target == m.id) {
+                continue;
+            }
+            let Some(at) = m.pos else { continue };
+            let d = [at[0] - s.camera[0], at[1] - s.camera[1], at[2] - s.camera[2]];
+            let Some(p) = patch_point(s.heading, d) else { continue };
+            let color = match m.index {
+                1 => [0.0, 1.0, 0.0, 1.0],
+                2 => [0.0, 0.0, 1.0, 1.0],
+                3 => [0.0, 1.0, 1.0, 1.0],
+                _ => [1.0, 1.0, 0.0, 1.0],
+            };
+            patch(p, color);
         }
-        if let Some(p) = s.waypoint.map(|w| waypoint_point(s.heading, s.camera, w)) {
-            let (hx, hy) = ((size[0] >> 1) as f32, (size[1] >> 1) as f32);
-            let (u0, v0) = (uv[0] / tex_size, uv[1] / tex_size);
-            let (u1, v1) = ((uv[0] + size[0] as f32) / tex_size, (uv[1] + size[1] as f32) / tex_size);
-            ui.ui.push(Quad {
-                tex,
-                blend: 0,
-                pos: [[p[0] - hx, p[1] - hy], [p[0] + hx, p[1] - hy], [p[0] + hx, p[1] + hy], [p[0] - hx, p[1] + hy]],
-                uv: [[u0, v0], [u1, v0], [u1, v1], [u0, v1]],
-                color: crate::map::WAYPOINT,
-                clip: None,
-            });
+        // the live client's duel, last (eqoa-live-1500's DrawPatch, 0x0135E124):
+        // the duel's centre in orange, at any distance
+        if let Some(c) = s.duel {
+            let d = [c[0] - s.camera[0], c[1] - s.camera[1], c[2] - s.camera[2]];
+            patch(bearing_point(s.heading, d), crate::duel::ORANGE);
         }
     }
 }
@@ -623,19 +412,12 @@ fn patch_point(yaw: f32, d: [f32; 3]) -> Option<[f32; 2]> {
     if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() > 2000.0 {
         return None;
     }
-    Some(rim_point(yaw, d))
+    Some(bearing_point(yaw, d))
 }
 
-/// Where the map's waypoint `w` (x, z) goes on the compass seen from the
-/// camera at `camera` turned to `yaw`: `DrawPatch`'s rim at its bearing,
-/// however far it is (the client's own: a member past 2000 has no patch).
-fn waypoint_point(yaw: f32, camera: [f32; 3], w: [f32; 2]) -> [f32; 2] {
-    rim_point(yaw, [w[0] - camera[0], 0.0, w[1] - camera[2]])
-}
-
-/// `DrawPatch`'s rim: 27 pixels out from (39, 55) at the bearing of `d`
-/// from a camera turned to `yaw`.
-fn rim_point(yaw: f32, d: [f32; 3]) -> [f32; 2] {
+/// `patch_point` at any distance (the live client's duel patch measures
+/// none).
+fn bearing_point(yaw: f32, d: [f32; 3]) -> [f32; 2] {
     use std::f32::consts::PI;
     let (center, radius) = ([39.0f32, 55.0], 27.0f32);
     // HPR with y zeroed
@@ -667,7 +449,7 @@ pub fn draw_gauge(vui: &Vui, ui: &mut dyn Raster, bar: i32, frame: i32, at: [i32
 
 #[cfg(test)]
 mod tests {
-    use super::{Gauge, Hud, HudState, MemberState, Pick, member_gauges, patch_point, target_gauges, waypoint_point};
+    use super::{Hud, HudState, Pick, bearing_point, patch_point};
 
     fn near(a: [f32; 2], b: [f32; 2]) -> bool {
         (a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3
@@ -691,57 +473,10 @@ mod tests {
         // 2000 is the edge, measured before y is dropped
         assert!(patch_point(0.0, [0.0, 0.0, 2000.0]).is_some());
         assert!(patch_point(0.0, [0.0, 100.0, 1998.0]).is_none());
-    }
-
-    /// The map's waypoint sits on the rim at its bearing from the camera,
-    /// as a member's patch does, but at any distance and whatever the
-    /// camera's height: one 5,000 ahead is at the top, one to the east (+x)
-    /// at the left facing +z and at the top facing +x. The control: a
-    /// member as far has no patch at all.
-    #[test]
-    fn the_waypoint_sits_on_the_rim_at_any_distance() {
-        let cam = [25000.0, 60.0, 15000.0];
-        assert!(near(waypoint_point(0.0, cam, [25000.0, 20000.0]), [39.0, 28.0]));
-        assert!(near(waypoint_point(0.0, cam, [25100.0, 15000.0]), [12.0, 55.0]));
-        assert!(near(waypoint_point(std::f32::consts::FRAC_PI_2, cam, [25100.0, 15000.0]), [39.0, 28.0]));
-        assert!(near(waypoint_point(0.0, cam, [25000.0, 15000.0 - 9000.0]), [39.0, 82.0]));
-        assert!(patch_point(0.0, [0.0, 0.0, 5000.0]).is_none(), "the control: a member that far has no patch");
-    }
-
-    /// Mana Bars: a member's power under its health (10 below, as the
-    /// player's own gauges stack), lit as its health is, the bars 48 apart;
-    /// the target's under its health, above the report's button (421); the
-    /// target of target's health and power under its bar, above the target's
-    /// title (348); none where there is no value (the controls), and none for
-    /// the target of target without its bar or for anything without a
-    /// target.
-    #[test]
-    fn mana_bars_sit_under_the_health_they_go_with() {
-        let m = |id, power, is_target| MemberState { id, name: "x".into(), is_target, hp: Some((200, false, false)), power };
-        let s = HudState { group: vec![m(1, Some(255), false), m(2, None, false), m(3, Some(0), true)], ..Default::default() };
-        let health = [30, 93 + 25];
-        assert_eq!(
-            member_gauges(&s),
-            [Gauge { bar: 9, at: [health[0], health[1] + 10], lit: false, v: 1.0 }, Gauge { bar: 9, at: [30, 93 + 96 + 35], lit: true, v: 0.0 }],
-            "the second member has none; the third is the target's, lit"
-        );
-        assert!(35 + 10 <= 46, "inside a member's bar");
-
-        let t = HudState { target_name: Some("Casil".into()), target_power: Some(51), ..Default::default() };
-        assert_eq!(target_gauges(&t), [Gauge { bar: 9, at: [30, 398 + 10], lit: true, v: 0.2 }]);
-        assert!(408 + 10 <= 421, "above the report's button");
-        assert_eq!(target_gauges(&HudState { target_power: None, ..t.clone() }), [], "no power sent");
-        assert_eq!(target_gauges(&HudState { target_name: None, ..t.clone() }), [], "no target");
-
-        let tot = HudState { target_of_target: Some("Luck".into()), tot_hp: Some(255), tot_power: Some(0), ..t.clone() };
-        assert_eq!(
-            target_gauges(&tot)[1..],
-            [Gauge { bar: 7, at: [30, 325], lit: true, v: 1.0 }, Gauge { bar: 9, at: [30, 335], lit: true, v: 0.0 }]
-        );
-        assert!(335 + 10 <= 348, "above the target's title");
-        assert_eq!(target_gauges(&HudState { tot_hp: None, ..tot.clone() })[1..], [Gauge { bar: 9, at: [30, 335], lit: true, v: 0.0 }], "power alone keeps its row");
-        assert_eq!(target_gauges(&HudState { target_of_target: None, ..tot.clone() }).len(), 1, "no bar, no gauges beside it");
-        assert_eq!(target_gauges(&HudState { target_name: None, ..tot }), [], "no target");
+        // the live client's duel patch measures no distance: past the edge
+        // it is where a member would be within it
+        assert!(near(bearing_point(0.0, [100.0, 0.0, 0.0]), [12.0, 55.0]));
+        assert!(near(bearing_point(0.0, [4000.0, 0.0, 0.0]), [12.0, 55.0]));
     }
 
     /// A pointer finds the HUD's pieces where they were drawn: in a 4:3
@@ -772,159 +507,6 @@ mod tests {
             assert_eq!(hud.pick([report[0] - side, report[1] + up]), Some(Pick::Report), "{size:?}");
             if side + up > 0.0 {
                 assert_eq!((hud.pick(me), hud.pick(report)), (None, None), "{size:?}: the game's places");
-            }
-        }
-    }
-
-    /// The minimap's place (`map::mini::FRAME`): a pointer finds it in a
-    /// 4:3 window where it is, in a 16:9 one out at the right with the quick
-    /// menus (106 frame pixels), in a tall one (798x828) up at the top (85);
-    /// the control: with the minimap off nothing is there. Needs a graphics
-    /// adapter; without one it says so and passes.
-    #[test]
-    fn a_pointer_finds_the_minimap_where_the_quick_menus_go() {
-        let _gpu = crate::GPU_TEST.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(mut ui) = crate::ui::tests::layer() else {
-            eprintln!("SKIP: no graphics adapter");
-            return;
-        };
-        let mut atlas = vec![vi::ui::UiTexEntry::default(); 27];
-        atlas[26].uv1 = [16, 28];
-        let vui = crate::ui::Vui::new(Default::default(), Default::default(), atlas);
-        let assets = crate::ui::UiAssets::default();
-        let f = crate::map::mini::FRAME;
-        let mid = [(f[0] + f[2]) as f32 / 2.0, (f[1] + f[3]) as f32 / 2.0];
-        for (size, side, up) in [((640, 480), 0.0, 0.0), ((1280, 720), 106.0, 0.0), ((798, 828), 0.0, 85.0)] {
-            for (on, want) in [(true, Some(Pick::Minimap)), (false, None)] {
-                ui.begin(size);
-                let mut hud = Hud::new();
-                hud.draw(&vui, &mut assets.raster(&mut ui), &HudState { minimap: on, ..Default::default() });
-                assert_eq!(hud.pick([mid[0] + side, mid[1] - up]), want, "{size:?}, minimap {on}");
-                if side + up > 0.0 {
-                    assert_eq!(hud.pick(mid), None, "{size:?}: not at the frame's own place");
-                }
-            }
-        }
-    }
-
-    /// The mic badge's place (`voicewnd::BADGE`): a pointer finds it as the
-    /// minimap's, in a 4:3 window where it is, in a 16:9 one out at the
-    /// right (106 frame pixels), in a tall one (798x828) up at the top (85);
-    /// the control: voice off, no badge, nothing there. Needs a graphics
-    /// adapter; without one it says so and passes.
-    #[test]
-    fn a_pointer_finds_the_mic_badge_beside_the_minimap() {
-        let _gpu = crate::GPU_TEST.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(mut ui) = crate::ui::tests::layer() else {
-            eprintln!("SKIP: no graphics adapter");
-            return;
-        };
-        let mut atlas = vec![vi::ui::UiTexEntry::default(); 27];
-        atlas[26].uv1 = [16, 28];
-        let vui = crate::ui::Vui::new(Default::default(), Default::default(), atlas);
-        let assets = crate::ui::UiAssets::default();
-        let b = crate::voicewnd::BADGE;
-        let mid = [(b[0] + b[2]) as f32 / 2.0, (b[1] + b[3]) as f32 / 2.0];
-        for (size, side, up) in [((640, 480), 0.0, 0.0), ((1280, 720), 106.0, 0.0), ((798, 828), 0.0, 85.0)] {
-            for (voice, want) in [(Some(crate::voicewnd::Badge { connected: true, transmitting: true, level: 0.5 }), Some(Pick::Voice)), (None, None)] {
-                ui.begin(size);
-                let mut hud = Hud::new();
-                hud.draw(&vui, &mut assets.raster(&mut ui), &HudState { voice, ..Default::default() });
-                assert_eq!(hud.pick([mid[0] + side, mid[1] - up]), want, "{size:?}, {voice:?}");
-                if side + up > 0.0 {
-                    assert_eq!(hud.pick(mid), None, "{size:?}: not at the frame's own place");
-                }
-            }
-        }
-    }
-
-    /// A voice mark's bars: none lit at or below speaking, one to three as
-    /// the level rises; a roster's name is a member's whatever its case and
-    /// the demo's " (demo)" (the controls: another name, a name only
-    /// beginning the same).
-    #[test]
-    fn a_voice_mark_lights_by_its_level() {
-        use super::{same_name, voice_bars_lit};
-        let s = crate::voice::SPEAKING;
-        assert_eq!([0.0, s, s + 0.01, 0.7, 0.99, 1.0].map(voice_bars_lit), [0, 0, 1, 2, 3, 3]);
-        assert!(same_name("Jibrish", "jibrish") && same_name("Jibrish (demo)", "Jibrish"));
-        assert!(!same_name("Jibrishes", "Jibrish") && !same_name("Dabsha", "Jibrish") && !same_name("Jib", "Jibrish"));
-    }
-
-    /// The voice marks: a groupmate in voice has one on its bar, right of
-    /// its gauges and status icons, where a pointer finds it (and the bar
-    /// elsewhere is still the member's); a member not in voice none (the
-    /// control); the room's speaker who is not a groupmate is listed right of
-    /// the player's frame, a quiet one not. Needs a graphics adapter; without
-    /// one it says so and passes.
-    #[test]
-    fn the_voice_marks_sit_on_the_bars_and_beside_the_frame() {
-        use super::{GROUP_AT, ROOM_SPEAKERS_AT, VOICE_ON_BAR};
-        use crate::voice::Mark;
-        let _gpu = crate::GPU_TEST.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(mut ui) = crate::ui::tests::layer() else {
-            eprintln!("SKIP: no graphics adapter");
-            return;
-        };
-        assert!(VOICE_ON_BAR[0] > 125 && VOICE_ON_BAR[0] + 16 <= 174 && VOICE_ON_BAR[1] >= 25 && VOICE_ON_BAR[1] + 13 <= 46, "inside a member's bar, past its icons");
-        assert!(ROOM_SPEAKERS_AT[0] > 200, "right of the player's frame");
-        let mut atlas = vec![vi::ui::UiTexEntry::default(); 27];
-        atlas[26].uv1 = [16, 28];
-        let vui = crate::ui::Vui::new(Default::default(), Default::default(), atlas);
-        let assets = crate::ui::UiAssets::default();
-        let m = |id, name: &str| MemberState { id, name: name.into(), hp: Some((200, false, false)), ..Default::default() };
-        let mark = |peer, name: &str, level, group, room| Mark { peer, name: name.into(), level, muted: false, group, room };
-        let s = HudState {
-            group_count: 3,
-            group: vec![m(1, "Jibrish"), m(2, "Dabsha")],
-            voice_marks: vec![mark(9, "Jibrish (demo)", 0.7, true, false), mark(12, "Kellina", 0.8, false, true), mark(13, "Quiet", 0.0, false, true)],
-            ..Default::default()
-        };
-        ui.begin((640, 480));
-        let mut hud = Hud::new();
-        hud.draw(&vui, &mut assets.raster(&mut ui), &s);
-        let on = |bar: i32, d: [i32; 2]| [(GROUP_AT[0] + VOICE_ON_BAR[0] + d[0]) as f32, (GROUP_AT[1] + 48 * bar + VOICE_ON_BAR[1] + d[1]) as f32];
-        assert_eq!(hud.pick(on(0, [6, 5])), Some(Pick::VoiceMark(9)), "Jibrish's mark");
-        assert_eq!(hud.pick([GROUP_AT[0] as f32 + 87.0, GROUP_AT[1] as f32 + 12.0]), Some(Pick::Member(1)), "Jibrish's bar elsewhere");
-        assert_eq!(hud.pick(on(1, [6, 5])), Some(Pick::Member(2)), "Dabsha in no voice: no mark");
-        let row = |k: i32| [(ROOM_SPEAKERS_AT[0] + 40) as f32, (ROOM_SPEAKERS_AT[1] + 15 * k + 5) as f32];
-        assert_eq!(hud.pick(row(0)), Some(Pick::VoiceMark(12)), "the room's speaker, listed");
-        assert_eq!(hud.pick(row(1)), None, "a quiet one is not");
-    }
-
-    /// Target of Target: its bar just above the "Target" title, where a
-    /// pointer finds it (in a 16:9 window out at the left side with the
-    /// target's bar), in the HUD's column left of the chat box (which reaches
-    /// x 191 and y 340 holding five lines: F3 20261026-053926) and below a
-    /// whole group's bars and its pet's (283); none without a name to show or
-    /// without a target (the controls). Needs a graphics adapter; without one
-    /// it says so and passes.
-    #[test]
-    fn the_target_of_target_bar_sits_above_the_targets() {
-        let _gpu = crate::GPU_TEST.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(mut ui) = crate::ui::tests::layer() else {
-            eprintln!("SKIP: no graphics adapter");
-            return;
-        };
-        let mut atlas = vec![vi::ui::UiTexEntry::default(); 27];
-        atlas[26].uv1 = [16, 28];
-        let vui = crate::ui::Vui::new(Default::default(), Default::default(), atlas);
-        let assets = crate::ui::UiAssets::default();
-        let at = [super::TOT_AT[0] as f32 + 87.0, super::TOT_AT[1] as f32 + 14.0];
-        assert!(super::TOT_AT[1] + 46 <= 348, "above the target's title");
-        assert!(super::TOT_AT[1] >= 93 + 3 * 48 + 46, "below a group of four's bars and the pet's");
-        assert!(super::TOT_AT[0] + super::TOT_WIDTH <= 194 && super::TOT_AT[0] == super::TARGET_AT[0], "the target's column, left of the chat box");
-        let shown = HudState { target_name: Some("Casil".into()), target_of_target: Some("Luck".into()), ..Default::default() };
-        for (size, side) in [((640, 480), 0.0), ((1280, 720), 106.0)] {
-            for (s, want) in [
-                (shown.clone(), Some(Pick::TargetsTarget)),
-                (HudState { target_of_target: None, ..shown.clone() }, None),
-                (HudState { target_name: None, ..shown.clone() }, None),
-            ] {
-                ui.begin(size);
-                let mut hud = Hud::new();
-                hud.draw(&vui, &mut assets.raster(&mut ui), &s);
-                assert_eq!(hud.pick([at[0] - side, at[1]]), want, "{size:?} {:?}", s.target_of_target);
             }
         }
     }

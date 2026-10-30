@@ -109,6 +109,22 @@ pub struct Menu {
 pub struct Menus {
     pub list: Vec<Menu>,
     by_va: HashMap<u32, usize>,
+    /// What an entry shows in place of its word, by the entry's message and
+    /// id, set at run time (the server's names for the TRIGGER entries,
+    /// `adminplay`).
+    pub labels: HashMap<(u32, i32), Label>,
+}
+
+/// An entry's text set at run time (`Menus::labels`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Label {
+    pub text: Vec<u16>,
+    /// kept whole after the text when the text is cut to the bar
+    /// (`startmenu::fit_label`)
+    pub tail: Vec<u16>,
+    /// drawn dimmed, as a choice that does nothing now (a trigger switched
+    /// off)
+    pub dim: bool,
 }
 
 impl Menus {
@@ -124,6 +140,11 @@ impl Menus {
         let entries = img.ptr_at(va + 8).map(|e| self.entries(img, e, count)).unwrap_or_default();
         self.list[k].entries = entries;
         k
+    }
+
+    /// The menu loaded from the `VIMenuDef` at `va`, if one was.
+    pub fn index_of(&self, va: u32) -> Option<usize> {
+        self.by_va.get(&va).copied()
     }
 
     /// A menu built at run time (the item menus `UpdateQuickBars` fills).
@@ -159,16 +180,6 @@ pub fn world_bounds(img: &ClientImage, world: i32) -> Option<[i32; 4]> {
     }
     let va = 0x00CF3738 + 0x20 * world as u32;
     Some([img.i32_at(va + 0x0C), img.i32_at(va + 0x10), img.i32_at(va + 0x14), img.i32_at(va + 0x18)])
-}
-
-/// `gWorldInfo[i].m_nameWord` (+0x08, a halfword): the world's name, a
-/// WORDS.TXT word (`VIWndGoto` draws it).
-pub fn world_name_word(img: &ClientImage, world: i32) -> Option<u16> {
-    if !(0..6).contains(&world) {
-        return None;
-    }
-    let w = (img.i32_at(0x00CF3738 + 0x20 * world as u32 + 8) & 0xFFFF) as u16;
-    (w != 0).then_some(w)
 }
 
 #[cfg(test)]

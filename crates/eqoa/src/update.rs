@@ -201,6 +201,16 @@ pub fn line() -> Option<String> {
     None
 }
 
+/// The updater as a report says it: this build, and what the last look at
+/// the release found (put in place, the release's already, or why not), so a
+/// player still on an old build after many starts says why (F3 crash
+/// 20261026-124849 came from dev-ffb50c3 a day and twenty builds later).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn describe() -> String {
+    let this = COMMIT.map_or_else(|| "local".to_string(), |c| format!("dev-{}", &c[..c.len().min(7)]));
+    format!("update: this is {this}; {}", native::found().unwrap_or_else(|| native::off().to_string()))
+}
+
 /// The release's version of a program in place other than this running
 /// one (`watch`): the game offers to restart into it.
 pub fn ready() -> Option<String> {
@@ -559,6 +569,28 @@ pub fn offer_drag(p: [f32; 2], now: i64) -> bool {
     }
 }
 
+/// What a point is on of the question (`offer_part`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub enum OfferPart {
+    /// its list, which a press drags
+    List,
+    /// elsewhere on its window (its choices among it)
+    Window,
+}
+
+/// What frame point `p` is on of the question while it is up: a finger put
+/// down there is the question's, not the touch screen's pad's.
+pub fn offer_part(p: [f32; 2]) -> Option<OfferPart> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return with_offer(|o| o.shown.then(|| o.wnd.part(p)).flatten());
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = p;
+        None
+    }
+}
+
 /// The press let go: true when it was the window's drag.
 pub fn offer_release() -> bool {
     #[cfg(not(target_arch = "wasm32"))]
@@ -652,6 +684,8 @@ mod native {
         /// in it
         ready: Option<String>,
         notes: Option<WhatsNew>,
+        /// what the last look found, for a report (`describe`)
+        found: Option<String>,
     }
 
     static UPDATER: Mutex<Option<Shared>> = Mutex::new(None);
@@ -665,6 +699,34 @@ mod native {
             && let Some(s) = u.as_mut()
         {
             s.state = state;
+        }
+    }
+
+    /// What the last look found, said (`describe`); none before one ended.
+    pub(super) fn found() -> Option<String> {
+        let u = UPDATER.lock().ok()?;
+        let s = u.as_ref()?;
+        Some(s.found.clone().unwrap_or_else(|| format!("looking ({:.0} s)", s.since.elapsed().as_secs_f32())))
+    }
+
+    /// Why this run does not look (no updater was made: `start`).
+    pub(super) fn off() -> &'static str {
+        if CHANNEL.is_none() || COMMIT.is_none() {
+            "a build of its own (no release to follow)"
+        } else if PLATFORM.is_none() {
+            "no release build for this platform"
+        } else if std::env::var_os("EQOA_NO_UPDATE").is_some() {
+            "off (EQOA_NO_UPDATE)"
+        } else {
+            "off for a scripted run"
+        }
+    }
+
+    fn note_found(what: String) {
+        if let Ok(mut u) = UPDATER.lock()
+            && let Some(s) = u.as_mut()
+        {
+            s.found = Some(what);
         }
     }
 
@@ -688,7 +750,8 @@ mod native {
         let base = test.unwrap_or_else(|| RELEASE.to_string());
         let every = super::intervals(std::env::var("EQOA_UPDATE_EVERY").ok().as_deref());
         let state = if updated.is_some() { State::Done } else { State::Checking };
-        *UPDATER.lock().unwrap() = Some(Shared { state, since: Instant::now(), exe: exe.clone(), relaunch: false, ready: None, notes: None });
+        let found = updated.as_ref().map(|v| format!("started by the update to {v}"));
+        *UPDATER.lock().unwrap() = Some(Shared { state, since: Instant::now(), exe: exe.clone(), relaunch: false, ready: None, notes: None, found });
         let spawned = std::thread::Builder::new().name("update".into()).spawn(move || {
             // this program's own bytes, before anything is put in its place
             let own = sha256_file(&exe).ok();
@@ -696,11 +759,16 @@ mod native {
                 let state = match update(&base, &exe, commit, platform, &set) {
                     Ok(Some(version)) => {
                         crate::say(&format!("update: {version} is in place"));
+                        note_found(format!("the start put {version} in place"));
                         State::Staged { version }
                     }
-                    Ok(None) => State::Done,
+                    Ok(None) => {
+                        note_found("the start found nothing to put in place (the release is this build, or its program is in place)".to_string());
+                        State::Done
+                    }
                     Err(e) => {
                         crate::say(&format!("update: {e}"));
+                        note_found(format!("the start's look failed: {e}"));
                         State::Done
                     }
                 };
@@ -802,11 +870,16 @@ mod native {
         loop {
             match watch_once(base, exe, commit, platform, own) {
                 Ok(Some(version)) => {
+                    note_found(format!("{version} is in place, for a restart"));
                     offer(base, version);
                     said.clear();
                 }
-                Ok(None) => said.clear(),
+                Ok(None) => {
+                    note_found("the release is this build".to_string());
+                    said.clear();
+                }
                 Err(e) => {
+                    note_found(format!("the last look failed: {e}"));
                     if e != said {
                         crate::say(&format!("update: {e}"));
                         said = e;
@@ -871,11 +944,60 @@ mod native {
         }
     }
 
-    /// The program an update moved aside, removed (on Windows it may still
-    /// be running for a moment: the next start removes it then).
+    /// The programs updates moved aside, removed (`asides`): on Windows one
+    /// may still be running, for a moment or as another window of the game
+    /// that has not restarted yet, and a later start removes it then.
     pub fn clean_up() {
         if let Ok(exe) = std::env::current_exe() {
-            let _ = std::fs::remove_file(sibling(&exe, "old"));
+            for p in asides(&exe) {
+                remove(&p);
+            }
+        }
+    }
+
+    /// Where the running program goes aside for the new one: `<exe>.old`,
+    /// or the first `<exe>.old-<n>` free when that cannot be removed. On
+    /// Windows nothing removes or replaces a program while it runs, and
+    /// another window of the game may still be running the one the last
+    /// update moved aside (F3 20261027-054237: every look failed "Access is
+    /// denied" on the rename onto it).
+    pub(super) fn aside(exe: &Path) -> PathBuf {
+        let old = sibling(exe, "old");
+        if remove(&old) {
+            return old;
+        }
+        (1..100).map(|n| sibling(exe, &format!("old-{n}"))).find(|p| remove(p)).unwrap_or(old)
+    }
+
+    /// Every program an update moved aside beside `exe` (`aside`'s names).
+    pub(super) fn asides(exe: &Path) -> Vec<PathBuf> {
+        let (Some(dir), Some(name)) = (exe.parent(), exe.file_name().and_then(|n| n.to_str())) else { return Vec::new() };
+        let Ok(list) = std::fs::read_dir(dir) else { return Vec::new() };
+        let old = format!("{name}.old");
+        list.filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_str().is_some_and(|f| f == old || f.strip_prefix(&old).and_then(|r| r.strip_prefix('-')).is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))))
+            .map(|e| e.path())
+            .collect()
+    }
+
+    /// `path` removed, or not there to begin with. Windows removes no
+    /// read-only file, so one is made writable first (a program a player
+    /// marked read-only was moved aside so, and stayed for good).
+    pub(super) fn remove(path: &Path) -> bool {
+        match std::fs::symlink_metadata(path) {
+            Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            Ok(m) if m.is_dir() => false,
+            Ok(m) => {
+                #[cfg(windows)]
+                if m.permissions().readonly() {
+                    let mut p = m.permissions();
+                    p.set_readonly(false);
+                    let _ = std::fs::set_permissions(path, p);
+                }
+                #[cfg(not(windows))]
+                let _ = m;
+                std::fs::remove_file(path).is_ok()
+            }
         }
     }
 
@@ -997,16 +1119,18 @@ mod native {
         r
     }
 
-    /// The new program in the old one's place: the old aside to
-    /// `<exe>.old` (a running program may be renamed, never written to),
-    /// the new one to its name with its permissions; the old one put back
-    /// when the second rename fails.
+    /// The new program in the old one's place: the old aside (`aside`: a
+    /// running program may be renamed, never written to), the new one to
+    /// its name, with its mode on Linux and macOS; the old one put back when
+    /// the second rename fails. (Windows' one permission is read-only, which
+    /// is not carried over: a read-only program aside is one no update could
+    /// remove.)
     pub(super) fn swap(exe: &Path, new: &Path) -> Result<(), String> {
+        #[cfg(unix)]
         if let Ok(m) = std::fs::metadata(exe) {
             let _ = std::fs::set_permissions(new, m.permissions());
         }
-        let old = sibling(exe, "old");
-        let _ = std::fs::remove_file(&old);
+        let old = aside(exe);
         std::fs::rename(exe, &old).map_err(|e| format!("{}: {e}", exe.display()))?;
         if let Err(e) = std::fs::rename(new, exe) {
             let _ = std::fs::rename(&old, exe);
@@ -1059,7 +1183,7 @@ mod native {
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
-    use super::native::{sha256_file, sibling, swap, update, watch_once};
+    use super::native::{aside, asides, remove, sha256_file, sibling, swap, update, watch_once};
     use super::*;
     use std::io::{Read, Write};
     use std::path::PathBuf;
@@ -1212,6 +1336,56 @@ mod tests {
         assert_eq!(std::fs::read(&exe).unwrap(), OLD);
         assert!(!sibling(&exe, "old").exists());
         assert_eq!(sha256_file(&exe).unwrap(), sha(OLD));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The program the last update moved aside, still there and not to be
+    /// removed (on Windows another window still running it; here a
+    /// directory in its place, which neither a removal nor a rename takes):
+    /// the running one goes aside under the next free name and the update
+    /// goes through. (Before: the rename onto it failed, every look.)
+    #[test]
+    fn a_program_aside_still_running_leaves_the_update_another_name() {
+        let d = dir("busyold");
+        let exe = d.join("eqoa.exe");
+        std::fs::write(&exe, OLD).unwrap();
+        let held = sibling(&exe, "old");
+        std::fs::create_dir(&held).unwrap();
+        std::fs::write(held.join("running"), b"another window").unwrap();
+        let base = serve(vec![("update.txt", manifest(THEIRS, &sha(NEW), NEW.len())), ("eqoa-vanilla-windows-x86_64.exe", NEW.to_vec())]);
+        assert_eq!(update(&base, &exe, MINE, "windows-x86_64", &|_| {}), Ok(Some("dev-2222222".into())));
+        assert_eq!(std::fs::read(&exe).unwrap(), NEW);
+        assert_eq!(std::fs::read(sibling(&exe, "old-1")).unwrap(), OLD);
+        assert!(held.join("running").exists(), "the held one is left alone");
+        // the next update while it still runs: the free name's file is
+        // removed and used again
+        std::fs::write(&exe, b"a third program").unwrap();
+        assert_eq!(update(&base, &exe, MINE, "windows-x86_64", &|_| {}), Ok(Some("dev-2222222".into())));
+        assert_eq!(std::fs::read(sibling(&exe, "old-1")).unwrap(), b"a third program");
+        assert!(!sibling(&exe, "old-2").exists());
+        // the control: free again, `<exe>.old` itself
+        std::fs::remove_dir_all(&held).unwrap();
+        assert_eq!(aside(&exe), held);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// The start's clean-up takes every program aside, and nothing else
+    /// beside the program.
+    #[test]
+    fn the_programs_aside_are_found_by_their_names() {
+        let d = dir("asides");
+        let exe = d.join("eqoa.exe");
+        for f in ["eqoa.exe", "eqoa.exe.old", "eqoa.exe.old-1", "eqoa.exe.old-12", "eqoa.exe.older", "eqoa.exe.old-x", "eqoa.exe.old-", "eqoa.exe.new", "eqoa.exe.lock", "other.exe.old"] {
+            std::fs::write(d.join(f), f).unwrap();
+        }
+        let mut found: Vec<String> = asides(&exe).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        found.sort();
+        assert_eq!(found, ["eqoa.exe.old", "eqoa.exe.old-1", "eqoa.exe.old-12"]);
+        for p in asides(&exe) {
+            assert!(remove(&p));
+        }
+        assert!(asides(&exe).is_empty() && exe.exists() && d.join("eqoa.exe.older").exists());
+        assert!(remove(&d.join("not-there")), "nothing there is removed already");
         let _ = std::fs::remove_dir_all(&d);
     }
 

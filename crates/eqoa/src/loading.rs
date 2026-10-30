@@ -140,6 +140,12 @@ pub struct Gears {
     hs: HSprite<Ee>,
     anims: AnimScene<Ee>,
     pub parts: Vec<(i32, esf::Model)>,
+    /// the clock at the first pose: the clip turns from there, whatever
+    /// the clock counts from (F3 crashes 20261028: posed on the DRDP clock,
+    /// wall-clock milliseconds as a u32, the gears' first step from the
+    /// load's 0 passed 2^31 at 00:54 UTC and every loading screen stopped the
+    /// client)
+    start: Option<i64>,
 }
 
 impl Gears {
@@ -150,15 +156,21 @@ impl Gears {
         let mut cache = vi::character::AnimCache::new();
         let (hs, attach) = vi::character::load_hsprite(lib, r, &mut anims, &mut cache)?;
         let parts: Vec<(i32, esf::Model)> = attach.iter().filter_map(|&(sid, node)| Some((node, lib.build_model(lib.lookup(sid)?)?))).collect();
-        (!parts.is_empty()).then_some(Gears { hs, anims, parts })
+        (!parts.is_empty()).then_some(Gears { hs, anims, parts, start: None })
     }
 
     /// `scene.SetTime(now)`, then the sprite's `Raster` under the
     /// model-view: each part's transform at `now` ms (the node's world
-    /// matrix times the centre transform), in the eye's space.
+    /// matrix times the centre transform), in the eye's space. The scene's
+    /// time is `now` since the first pose (`start`), begun again should the
+    /// clock go back.
     pub fn pose(&mut self, now: i64) -> Vec<Matrix44<Ee>> {
         let mv = model_view();
-        self.anims.time = now;
+        let start = match self.start {
+            Some(s) if s <= now => s,
+            _ => *self.start.insert(now),
+        };
+        self.anims.time = now - start;
         let lod = self.hs.calc_lod_level_index(&mv);
         self.hs.process(lod, &self.anims);
         let centre = self.hs.calc_trans_about_center(&mv, &self.anims);
@@ -177,6 +189,9 @@ pub struct Wait {
     /// zones are in (`Play::loading_step`); a dump's (`Msg000D`'s
     /// `SetLocation`) and world entry's stand as given
     pub respawn: bool,
+    /// the move is the GM's Goto (`MoveTo`): its floor cast again, from 300
+    /// above to 300 below, once the zones are in (`Screen::move_to`)
+    pub move_to: bool,
     /// the session's clock when it went up
     pub since: i64,
     /// where the walk is held meanwhile: where it was put (the move's
@@ -206,7 +221,7 @@ impl Screen {
     pub fn begin(&mut self, at: [f32; 3], heading: f32, entering: bool, respawn: bool, now: i64) {
         let up = self.wait.is_some();
         let since = self.wait.map_or(now, |w| w.since);
-        self.wait = Some(Wait { at, heading, entering: entering || self.wait.is_some_and(|w| w.entering), respawn, since, held: None });
+        self.wait = Some(Wait { at, heading, entering: entering || self.wait.is_some_and(|w| w.entering), respawn, move_to: false, since, held: None });
         #[cfg(target_arch = "wasm32")]
         let hold = crate::web::page_value("loadinghold");
         #[cfg(not(target_arch = "wasm32"))]
@@ -231,6 +246,14 @@ impl Screen {
     pub fn hold_far(&mut self) {
         if crate::settings::loading_longer() {
             self.hold_at_least(FAR_HOLD_MS);
+        }
+    }
+
+    /// The move it waits for is `MoveTo`'s (the GM's Goto): its floor is cast
+    /// as `MoveTo` casts, once the zones are in.
+    pub fn move_to(&mut self) {
+        if let Some(w) = self.wait.as_mut() {
+            w.move_to = true;
         }
     }
 
@@ -439,6 +462,31 @@ mod tests {
         assert!(near.abs() < 1e-6 && (far - 1.0).abs() < 1e-6, "{near} {far}");
     }
 
+    /// A Goto's wait (`move_to`) says so at its end, for its floor to be cast
+    /// as `MoveTo` casts once the zones are in, a world change's too; the
+    /// controls: a teleport's wait does not, nor a second move's while it is
+    /// up (the second move's own).
+    #[test]
+    fn a_goto_waits_to_cast_its_floor_as_move_to_does() {
+        let mut s = Screen::default();
+        s.begin([1.0, 24.0, 3.0], 0.0, false, false, 1000);
+        s.move_to();
+        assert_eq!(s.end(true, 1100).map(|w| (w.move_to, w.respawn)), Some((true, false)));
+        s.begin([1.0, 24.0, 3.0], 0.0, true, false, 1200);
+        s.move_to();
+        s.entered();
+        assert_eq!(s.end(true, 1300).map(|w| w.move_to), Some(true), "into another world");
+        s.begin([1.0, 2.0, 3.0], 0.0, false, true, 1400);
+        assert_eq!(s.end(true, 1500).map(|w| (w.move_to, w.respawn)), Some((false, true)), "a teleport's");
+        s.begin([1.0, 24.0, 3.0], 0.0, false, false, 1600);
+        s.move_to();
+        s.begin([9.0, 2.0, 9.0], 0.0, false, true, 1650);
+        assert_eq!(s.end(true, 1700).map(|w| w.move_to), Some(false), "the second move's own");
+        // with no wait up, nothing to mark
+        s.move_to();
+        assert!(!s.up());
+    }
+
     /// The wait: up at a move, held while another world is read, down once
     /// the zones round the arrival are in, or at the cap whatever is out; a
     /// second move while it is up keeps its start and waits for the new place.
@@ -542,5 +590,16 @@ mod tests {
         }
         // control: they turn, so a still pose would not pass for the clip
         assert!(firsts.iter().any(|p| (p[0] - firsts[0][0]).abs() > 0.01), "{firsts:?}");
+        // F3 crashes 20261028: the DRDP clock (wall-clock milliseconds as a
+        // u32) past 2^31 at the first pose stopped the client; the gears
+        // turn the same from any clock, and through one that goes back
+        for base in [0i64, 2_147_717_568, (1 << 32) - 1000] {
+            let mut g = Gears::load(&lib).unwrap();
+            let turned: Vec<[f32; 3]> = (0..4000i64).step_by(250).map(|ms| at(&g.pose(base + ms)[0], g.parts[0].1.pos[0])).collect();
+            assert_eq!(turned, firsts, "from {base}");
+        }
+        let mut g = Gears::load(&lib).unwrap();
+        g.pose(2_147_717_568);
+        assert_eq!(g.pose(500).len(), 2, "a clock gone back");
     }
 }

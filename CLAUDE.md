@@ -10,11 +10,18 @@ current.
 - Vanilla: nothing that changes the game's picture or play beyond what README "Vanilla" keeps
   (widescreen, the untethered frame rate, the mouse and the touch screen, the keyboard with WASD and
   the Controls page, 1,000 lines of chat, no green backdrop behind the start menu's windows, the
-  Extended options, the map (its XP camps, coaches, routes and town names) and the minimap, the updater, the problem and crash reports, the 2002 disc's art on F9, Hide UI
-  on H, Target of Target, names from farther and smaller zoomed out (and every one in a crowd, Overlapping Names Show), Ignore Shouts kept, Update Notices, Text
-  Sharp or Smooth, Loading Screens Longer or Instant, Mana Bars from a server that sends others' power, Quest Markers on
-  the map and the Quest Tracker from a server that sends them, else the client's own quest guide's, labelled "(guide)"; the voice chat window on O and the HUD's mic badge). A
-  new client-side addition is the user's call: ask first.
+  Extended options, the updater, the problem and crash reports, the 2002 disc's art on F9, Hide UI
+  on H, names from farther and smaller zoomed out (and every one in a crowd, Overlapping Names Show),
+  Ignore Shouts kept, Update Notices, Text Sharp or Smooth, Loading Screens Longer or Instant, Render
+  Scale x1, x2 or x4 (off unless chosen), HUD Nearest or Sharp (Nearest, the game's, by default: the
+  user's of 2026-10-28, "make nearest the default ... since there is a cost"; Sharp was the default
+  on 2026-10-27), and the live game's duel window on a server that turns duels on (the user's of
+  2026-10-29, "port the duel window to vanilla too": `duel.rs`, `duelwnd.rs`, `duelplay.rs`, read off SOE's
+  final CLIENT in the Corsten save state, README "duels")).
+  A new client-side addition is the user's call: ask first. Sharp filtering is for the 2D layer and
+  the text only: the world's textures are drawn smooth, as the game filters them (the user,
+  2026-10-27, after a Crisp row for them: "world textures cant render proper without smooth. so
+  only use for UI, Text").
   Fixes are made here and are not carried to eqoa-rs any more (the user, 2026-10-23: "vanilla
   only"); its remote `eqoa-rs` stays for reading it. Link no private repository from anything
   public here.
@@ -79,6 +86,19 @@ current.
   input made (`input::from_device`: a run with an input script says its presses were not the player's). Nothing invented
   to look like a PS2's; a new field S2 adds is the user's call. The July S2's hello is not sent (our server reads 19 as
   its hard-disk loader's 30 worlds).
+- SOE's final live client's words are one table, `livewords.rs` (the rows it added, 1840-1889, and the eight it changed
+  in place, read off its `VIStringTable` in Corsten's retail state): `spelling::words` fills the added rows into every
+  WORDS.TXT that lacks them, and a form ported from the live client that pairs with a changed row reads it with
+  `livewords::live` (841 "Ticket #"). A live port's word goes there, never into a table of its own; 1811-1839 are
+  renumbered in the live table and not given. Its mail forms are used only after go-eqoa-server's offer (0x7E0A,
+  `gram::OP_LIVE_MAIL`); with none, the disc's.
+- SOE's final live client's features (the user's asks, read out of its CLIENT in the Corsten save state): `live.rs` keeps
+  the server's feature word (0x07F5, `live::features()`); each part is gated by it exactly as the live client gates it, and
+  a server that sends no word (Sandstorm, eqoa.live) keeps the disc's behaviour. Auction stacks answer go-eqoa-server's
+  0x7E0B offer (`liveplay::OP_AUCTION_FORM`: 1 while bit 0x08 is set) so it reads a Sell's count as items.
+- SOE's live game's look (README "Dyes", `net::session::OP_LIVE_LOOK`): taken whenever a server offers it; the
+  disc's look stays every other server's (Sandstorm never offers it), so a change to the disc's readers is tested on
+  both. `EQOA_LIVE_LOOK=0` keeps the disc's in a test (a PS2's view of the same server).
 - Game-logic floats go through `ee::*`, never host `f32` operators; every compare too.
 - Port from the decomp (`../decomp/src`), not from the Go client: the Go client's
   differences from the original are listed in `../claude-notes/go-client-vs-decomp-audit-20261015.md`.
@@ -100,7 +120,8 @@ current.
   runs on the wall clock, silent), or `eqoa listen` to a WAV; the user's speakers are real.
   In a page the driver runs on the game's thread and an AudioWorklet plays what `Audio::feed`
   mixes (`web/sound.js`); the music comes through `bgm.rs` (a BGM read whole before the device may
-  start it, `Disc::ready`/`Link::bgm_ready`, always true natively). Headless: `web/drive.py` passes
+  start it, `Disc::ready`/`Link::bgm_ready`; natively read on a thread of its own, `bgm::read_on_a_thread`:
+  never read the disc under the driver's lock, which the game's thread takes every frame). Headless: `web/drive.py` passes
   `--autoplay-policy=no-user-gesture-required`; `--js T=JSON.stringify(eqoaAudio.stats())` reads the
   worklet's counts (dry counts only after the first frames came).
 - CLIENT and SUPPORT (the start menu, gWorldInfo, the race cameras; the HUD's atlas, the UI sounds'
@@ -135,13 +156,20 @@ current.
 - The game runs 30 frames a second; the client draws at the display's rate. What the game counts in frames
   (the HUD and every window, `KeyFlash`, `TextScroll`, the rings' easing, the death camera, the shake) steps
   on `frames.rs`'s clock (`game_frame`, `Play::hud`), never once a frame drawn; a new frame-counted thing
-  goes there, with a test at 30 and 165 Hz. What moves by the clock runs every frame drawn.
+  goes there, with a test at 30 and 165 Hz. What moves by the clock runs every frame drawn, but
+  the walk: its integrator's speed grows as its step shrinks, so it keeps the console's own frames
+  (33.37 ms) and is drawn on its way to the next (`walker.rs`, `Kept`); never step it a frame drawn.
+  Anything that writes the walk as a control between frames (the mouse's `set_heading`) calls
+  `Walker::rewind` first, or it reads as a place given and no console frame is stepped; a place it
+  gives the follow orbit's camera then (`set_orbit_angle`, round the console frame put back) is moved
+  onto the walk as last drawn (`Walker::camera_as_drawn`), or a sidestep jitters the camera.
 - Input (README "the pad", "the mouse and the touch screen"): the pad is the game's own path
   (`vi::pad` held to oracle ops 50-52; `input.rs` libpad on the host, `PadKeys`, `Play::set_key`,
   `controls.rs` UpdateControls). Headless: `EQOA_PAD` (`start@2500;stick l 0 -1@1500+2000`),
   `EQOA_MOUSE` (`click @<name>@ms`, `click X Y@ms`, `rclick`, `wheel N`, `press l|r`, `release l|r`,
   `move DX DY`: a drag past the slop takes the pointer as a window would, `mouse::Grab`), `EQOA_TOUCH=1`,
-  `EQOA_TOUCHES`, `EQOA_TAP=<name|*>@ms`, `EQOA_HIDE_UI=<ms>[;<ms>]` in a playshot; `EQOA_WATCH=<name>` (that creature a frame as drawn, and the player's own 0x40s); `drive.py --gamepad/--mobile/--touch/--mouse`
+  `EQOA_TOUCHES`, `EQOA_TAP=<name|*>@ms`, `EQOA_HIDE_UI=<ms>[;<ms>]` in a playshot; `EQOA_TARGET=<name>@ms[;...]` in a
+  playshot and in `eqoa play` (with `EQOA_PAD`, `EQOA_SAY` and `EQOA_SHOTS` under `EQOA_OFFSCREEN`: two clients' duel); `EQOA_WATCH=<name>` (that creature a frame as drawn, and the player's own 0x40s); `drive.py --gamepad/--mobile/--touch/--mouse`
   in a page; `EQOA_PAD_TRACE=1` / `?padtrace`; `EQOA_GLYPHS=1` prints the button glyphs a frame drew.
   A button pressed and let go between two frames reaches the game (`input::Latch`, every source but XInput):
   a new source keeps its presses through it.
@@ -194,6 +222,12 @@ current.
   `build.sh`'s copy list). Its notices are `web/report.js`'s: the client raises them through
   `web::problem` (a part gone: dismiss it or send a report) and `web::crash` (the client stopped:
   the crash report). `web/pagetest.py` checks the page's half.
+  The page puts itself full screen at Start (`main.js` "full screen", README "In a browser"): on a
+  touch device but iOS's (there the Home Screen app is), on a computer only where Keyboard Lock keeps
+  Escape the game's, never while multiboxing; F11 stays the browser's. A full screen asked for uses
+  the click's activation up: ask for it after anything else that click needs (asked first, it broke
+  Start with a remembered disc the browser had to ask for).
+  It installs as an app (`web/manifest.json`, the icons `tools/webicons` draws off `icon_art.rs`).
 - Reports (the user, 2026-10-23: the bug reports back from eqoa-rs, in the page and natively, crash
   reports too): `report.rs` natively, `web/report.js` in a page, both to reportd on eqoaclassic
   (`/eqoa/reports`, board `/eqoa/reports/board`). Nothing is sent unless the player presses Send,

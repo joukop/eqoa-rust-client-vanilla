@@ -19,9 +19,15 @@
 //!   F11 and Alt+Enter toggle it, `display`: it changes at once and stays,
 //!   kept with the window's place, and Triangle leaves it), Brightness (a
 //!   slider, `settings::curve`), Frame Rate (30, 60 or the display's,
-//!   `settings::frame_due`) and VSync (natively: a frame shown only at the
+//!   `settings::frame_due`), VSync (natively: a frame shown only at the
 //!   display's refresh, or at once; `settings::vsync`, the surface's present
-//!   mode in `viewer`);
+//!   mode in `viewer`), Render Scale (x1, the game's picture at the window's
+//!   size; x2 or x4: the whole frame drawn that many times larger each way
+//!   and averaged down, `render::scale`, at less where the window is too
+//!   large for it, which beside Back it then says) and Loading Screens
+//!   (Longer: a long trip's loading screen up at least a second, as a PS2's
+//!   disc read keeps it; Instant: down as soon as the place is in,
+//!   `loading::Screen::hold_far`);
 //! - World (the user's, 2026-10-25): Fog (a slider: the game's distance fog
 //!   and far plane in the middle, off at the left, thicker to the right,
 //!   `fog`), Mipmaps (On, the game's: the textures' mip levels sampled by
@@ -29,25 +35,20 @@
 //!   alone, `render::set_mipmaps`), Flora (On, the game's: the plants it
 //!   grows round the camera, `flora`; Off: none), Environment (On, the
 //!   game's: the effect volumes, ground fog, dust, leaves, light shafts and
-//!   flocks, `fx`; Off: none), Art (Frontiers' or the 2002 disc's, `era`,
+//!   flocks, `fx`; Off: none), Shadows (On, the game's: the characters' blob
+//!   shadows, `shadows`; Off: none) and Art (Frontiers' or the 2002 disc's, `era`,
 //!   as F9 swaps it: drawn as it moves, the 2002 disc asked for the first
-//!   time) and Map Markers (On: the map's XP camps and coaches, `map::markers`;
-//!   Off: neither; the map's own X or ○ turns it too);
+//!   time);
 //! - UI: Ability Bars (the game's 2, or 3 or 4: the HUD's quick menus and
-//!   the spell book's slots, `hudmenu`), Target of Target (Off by default:
-//!   the target's bar shows whom the target targets, `Play::target_of_target`),
-//!   Mana Bars (On by default: a power gauge under each group member's, the
-//!   target's and the target of target's health, from a server that sends
-//!   others' power, `net::session::OP_POWER_BARS`; none from one that does
-//!   not, Sandstorm), Update Notices (one setting for
+//!   the spell book's slots, `hudmenu`), Update Notices (one setting for
 //!   every window: off, the game never asks to restart into a newer build,
 //!   which starts the next time the game does; `update::asks`, and a page's
 //!   Reload notice, `web/main.js`), Text (Sharp or Smooth: the game's font
 //!   scaled to the window with even strokes, or filtered as the PS2 filters
-//!   it, `render::ui::TextFilter`; on Video until Display took its place)
-//!   and Loading Screens (Longer: a long trip's loading screen up at least a
-//!   second, as a PS2's disc read keeps it; Instant: down as soon as the
-//!   place is in, `loading::Screen::hold_far`);
+//!   it, `render::ui::TextFilter`) and HUD (Nearest, the game's and the
+//!   default; or Sharp: the 2D layer's other textures scaled with every texel
+//!   as wide as every other, as Text's Sharp draws a font, at a cost,
+//!   `render::ui::HudFilter`);
 //! - Controller: Controller Focus (which controllers this window reads:
 //!   Auto, Window, Pad 1 to 4 or Off, `input::pick`, kept for each window of
 //!   the client open, `multibox`; what it reads now is said beside Back) and
@@ -73,13 +74,7 @@
 //!   not in front is not heard, `audio::set_heard`) and natively Output
 //!   Device (Default, the system's, followed when it changes, or a device
 //!   the system lists, the default while it is not connected: `audio`'s
-//!   `retarget`; its page says where the sound plays now);
-//! - Quests: Quest Markers (On: the map's marks of the quests the player may
-//!   take and the steps it has to do, from a server that sends them, else the
-//!   client's own guide, `questguide`, `map::quests`; Off: the server is asked
-//!   for none; the map's own J or R3 turns it too) and Quest Tracker (On: the
-//!   HUD's list of the quests under way, each step counted, under the
-//!   minimap, `tracker`, the server's or the guide's; Off: none).
+//!   `retarget`; its page says where the sound plays now).
 //! Triangle goes back a step: a page to the categories, the categories to
 //! the options menu. They change as they are moved, Triangle on the options
 //! menu puts them back, and Save Changes keeps them with the game's
@@ -543,13 +538,10 @@ impl WndOptions {
     /// VSync (26) turn over, VSync natively only (a page's stays on with
     /// sound 9: the browser paces it); Name Distance (27) by tens from the
     /// game's 22 to 200 (`step_name_distance`); Text (30) goes between Sharp and
-    /// Smooth; Target of Target (31), Mana Bars (42), Minimap (44), Quest Markers (45), Quest Tracker (46), Update Notices (29), Overlapping
-    /// Names (34, Hide and Show), Mipmaps (35) and Loading Screens (38,
-    /// Longer and Instant) turn over;
+    /// Smooth; Update Notices (29), Overlapping Names (34, Hide and Show),
+    /// Mipmaps (35) and Loading Screens (38, Longer and Instant) turn over;
     /// Output Device (32) goes round the system default and the devices
-    /// listed (`step_output`); Display (33) turns the window over (`display`);
-    /// Voice Chat (47) goes round Off, Push to Talk and Open Mic, Voice Demo
-    /// (49) turns over and Voice Volume (50) slides by tenths to 200%. A
+    /// listed (`step_output`); Display (33) turns the window over (`display`). A
     /// slider (`slider_at`) makes its own
     /// sound, as a volume does; every other row sound 11.
     fn change(&mut self, o: &mut GameOptions, d: i32, cues: &mut Vec<i32>, ups: &mut Vec<OptionsUp>) {
@@ -615,19 +607,6 @@ impl WndOptions {
                     26 => c.vsync = !c.vsync,
                     // Update Notices (`update::asks`)
                     29 => c.update_notices = !c.update_notices,
-                    // Target of Target (`Play::target_of_target`)
-                    31 => c.target_of_target = !c.target_of_target,
-                    // Mana Bars: the server told from the next frame
-                    // (`Play::agree_power_bars`)
-                    42 => c.mana_bars = !c.mana_bars,
-                    // Minimap: drawn or not from the next frame (`map::mini`)
-                    44 => c.minimap = !c.minimap,
-                    // Quest Markers: the server told from the next frame
-                    // (`Play::agree_quest_marks`), the map's marks drawn or not
-                    45 => c.quest_markers = !c.quest_markers,
-                    // Quest Tracker: the server told from the next frame
-                    // (`Play::agree_quest_progress`), the HUD's list drawn or not
-                    46 => c.quest_tracker = !c.quest_tracker,
                     // Overlapping Names: the plates kept from the next
                     // frame (`play::labels`)
                     34 => c.overlapping_names = !c.overlapping_names,
@@ -635,6 +614,16 @@ impl WndOptions {
                     30 => c.text = c.text.other(),
                     // Loading Screens: the next long trip's (`loading`)
                     38 => c.loading_longer = !c.loading_longer,
+                    // Render Scale: the frame from the next one (`viewer`,
+                    // `render::scale`), round 1, 2 and 4
+                    39 => {
+                        let all = crate::settings::RENDER_SCALES;
+                        let at = all.iter().position(|&k| k == c.render_scale).unwrap_or(0);
+                        c.render_scale = all[(at + if d < 0 { all.len() - 1 } else { 1 }) % all.len()];
+                    }
+                    // HUD: every texture of the 2D layer but the fonts from
+                    // the next frame (`viewer`, `render::ui::set_hud_filter`)
+                    40 => c.hud = c.hud.other(),
                     // Mipmaps: every texture's levels from the next frame
                     // (`viewer`, `render::set_mipmaps`)
                     35 => c.mipmaps = !c.mipmaps,
@@ -642,18 +631,8 @@ impl WndOptions {
                     36 => c.flora = !c.flora,
                     // Environment: the effect volumes from the next frame (`viewer`, `fx`)
                     37 => c.environment = !c.environment,
-                    // Map Markers: the map's camps and coaches from its next frame (`map::markers`)
-                    43 => c.map_markers = !c.map_markers,
-                    // Voice Chat round Off, Push to Talk and Open Mic, Voice
-                    // Demo over: the server told from the next frame (`voice`)
-                    47 => {
-                        let all = crate::settings::VoiceChat::ALL;
-                        let at = all.iter().position(|&v| v == c.voice).unwrap_or(0);
-                        c.voice = all[(at + if d < 0 { all.len() - 1 } else { 1 }) % all.len()];
-                    }
-                    49 => c.voice_demo = !c.voice_demo,
-                    // Voice Volume: by tenths, 0 to twice the voices' own
-                    50 => slide(&mut c.voice_volume, 0, crate::settings::VOICE_VOLUME_MAX, 1),
+                    // Shadows: drawn or not from the next frame (`viewer`, `shadows`)
+                    46 => c.shadows = !c.shadows,
                     // Output Device: the sound opened there from the next
                     // frame (`audio::retarget`)
                     32 => step_output(&mut c, &crate::audio::outputs().listed.map(|l| l.1).unwrap_or_default(), d),
@@ -768,11 +747,16 @@ impl WndOptions {
                 self.page = 3;
                 self.cat = None;
                 self.cat_sel = 0;
-                // the menu's window (`open`) again, where it is
+                // a window as the menu's (`open`), as tall as its categories
+                // and their legend (`CATEGORY_ROWS`), its bottom where the
+                // menu's is: the rows past the menu's nine go up, clear of
+                // the title's own menu under it
                 self.window4.close(true);
-                self.window4.init(vui, r, self.window.center, 300, 9, 0);
+                self.window4.init(vui, r, self.window.center, 300, CATEGORY_ROWS, 0);
                 self.window4.open(false);
                 self.window4.set_title(Some(&wide(EXTENDED)));
+                let bottom = |w: &Window| w.top_left()[1] + w.size[1];
+                self.window4.center[1] -= bottom(&self.window4) - bottom(&self.window);
                 return false;
             }
             4 => {
@@ -995,9 +979,10 @@ impl WndOptions {
     }
 
     /// Extended's menu: its categories, the selected one lit, and the
-    /// legend, laid out as the options menu is (`draw_menu`) in a window as
-    /// its (`select`), over it; its rows answer a pointer only while it has
-    /// the keys (no category's page open).
+    /// legend, laid out as the options menu is (`draw_menu`: a row down, the
+    /// legend two under the last) in a window as its (`select`), over it; its
+    /// rows answer a pointer only while it has the keys (no category's page
+    /// open).
     fn draw_categories(&mut self, vui: &Vui, r: &mut dyn Raster) {
         self.window4.draw(vui, r);
         let width = self.window4.size[0];
@@ -1011,7 +996,7 @@ impl WndOptions {
         }
         let w = |id: i32| vui.words.get(id, vui.language);
         let legend = wide(&format!("|x {}   |t {}", w(212), w(750)));
-        self.window4.text(vui, r, &legend, 40, 8, UI_COLORS[0], 0);
+        self.window4.text(vui, r, &legend, 40, CATEGORY_LEGEND, UI_COLORS[0], 0);
     }
 
     /// A category's page (`CATEGORIES`), laid out as the game's pages are (a
@@ -1061,7 +1046,10 @@ impl WndOptions {
         match CATEGORIES[c].note {
             Note::Reads => Some(crate::input::reads()),
             Note::Server => self.server_note.clone().filter(|_| matches!(self.item, 23 | 24)),
-            Note::Output if matches!(self.item, 47 | 49) => Some(voice_note(self.item)),
+            Note::Scale => {
+                let asked = crate::settings::client().render_scale as u32;
+                scale_note(asked, render::scale::would_draw(asked)).filter(|_| self.item == 39)
+            }
             Note::Output if cfg!(target_arch = "wasm32") => None,
             Note::Output => Some(match crate::audio::playing() {
                 Some(d) => format!("Plays on {d}"),
@@ -1081,7 +1069,7 @@ const CONTROLS: &str = "Controls";
 /// Extended's rows, by the item each changes (`change`), and their labels.
 /// A row is drawn by its item (`value_text`, or `slider_at` for a slider)
 /// and shown on the page of the category that lists it (`CATEGORIES`).
-const EXTENDED_ITEMS: [(i32, &str); 34] = [
+const EXTENDED_ITEMS: [(i32, &str); 28] = [
     (12, "Level of Detail"),
     (13, "Brightness"),
     (14, "Frame Rate"),
@@ -1100,7 +1088,6 @@ const EXTENDED_ITEMS: [(i32, &str); 34] = [
     (27, "Name Distance"),
     (29, "Update Notices"),
     (30, "Text"),
-    (31, "Target of Target"),
     (32, "Output Device"),
     (33, "Display"),
     (34, "Overlapping Names"),
@@ -1108,14 +1095,9 @@ const EXTENDED_ITEMS: [(i32, &str); 34] = [
     (36, "Flora"),
     (37, "Environment"),
     (38, "Loading Screens"),
-    (42, "Mana Bars"),
-    (43, "Map Markers"),
-    (44, "Minimap"),
-    (45, "Quest Markers"),
-    (46, "Quest Tracker"),
-    (47, "Voice Chat"),
-    (49, "Voice Demo"),
-    (50, "Voice Volume"),
+    (39, "Render Scale"),
+    (40, "HUD"),
+    (46, "Shadows"),
 ];
 
 /// What a category's page says beside its Back legend.
@@ -1127,6 +1109,9 @@ enum Note {
     /// what this server gives (`WndOptions::server_note`), while NPC/PC
     /// Display or Distance is chosen
     Server,
+    /// the scale the frame is drawn at, while Render Scale is chosen and the
+    /// window is too large for the one asked (`render::scale::fit`)
+    Scale,
     /// where the sound plays now (`audio::playing`), natively
     Output,
 }
@@ -1141,35 +1126,38 @@ struct Category {
 
 /// Extended's categories, in its menu's order (the user's: "Extended, then
 /// Video, UI, Controller, etc."), each a page of `PAGE_MOST` rows at most.
-const CATEGORIES: [Category; 8] = [
-    Category { name: "Video", items: VIDEO, note: Note::None },
-    Category { name: "World", items: &[20, 35, 36, 37, 25, 43], note: Note::None },
-    Category { name: "UI", items: &[22, 31, 42, 44, 29, 30], note: Note::None },
+const CATEGORIES: [Category; 7] = [
+    Category { name: "Video", items: VIDEO, note: Note::Scale },
+    Category { name: "World", items: &[20, 35, 36, 37, 46, 25], note: Note::None },
+    Category { name: "UI", items: &[22, 29, 30, 40], note: Note::None },
     Category { name: "Controller", items: &[16, 19], note: Note::Reads },
     Category { name: "Camera", items: &[15, 17, 18], note: Note::None },
     Category { name: "Characters", items: &[12, 23, 24, 27, 34], note: Note::Server },
     Category { name: "Sound", items: SOUND, note: Note::Output },
-    // the quests' (UI holds its six): the marks a server sends for the map
-    // and its tracker for the HUD
-    Category { name: "Quests", items: &[45, 46], note: Note::None },
 ];
 
 /// Video's rows: natively Display first (F3 20261024-201507: full screen was
 /// F11's alone); a page's full screen is the browser's. Fog and Mipmaps went
-/// to World with Art (the user's, 2026-10-25); Loading Screens came from UI
-/// when Minimap took its place there (F3 pass 18).
+/// to World with Art (the user's, 2026-10-25); Loading Screens came from UI,
+/// and Text went back to UI beside HUD when Render Scale came (2026-10-27).
 #[cfg(not(target_arch = "wasm32"))]
-const VIDEO: &[i32] = &[33, 13, 14, 26, 38];
+const VIDEO: &[i32] = &[33, 13, 14, 26, 39, 38];
 #[cfg(target_arch = "wasm32")]
-const VIDEO: &[i32] = &[13, 14, 26, 38];
+const VIDEO: &[i32] = &[13, 14, 26, 39, 38];
 
-/// Sound's rows: natively Output Device after Sound in Background (a page
-/// plays where the browser does), then voice chat's: Voice Chat, Voice Demo
-/// and Voice Volume (F3 pass 18).
+/// Sound's rows: natively Output Device after Sound in Background; a page
+/// plays where the browser does.
 #[cfg(not(target_arch = "wasm32"))]
-const SOUND: &[i32] = &[21, 32, 47, 49, 50];
+const SOUND: &[i32] = &[21, 32];
 #[cfg(target_arch = "wasm32")]
-const SOUND: &[i32] = &[21, 47, 49, 50];
+const SOUND: &[i32] = &[21];
+
+/// Extended's menu (`draw_categories`): the categories from its first row,
+/// the legend two under the last, as the options menu's six and its legend
+/// on its eighth row of nine (`draw_menu`), the window as tall as they are
+/// (F3 20261026-135758: a category drawn on the menu's legend row).
+const CATEGORY_LEGEND: i32 = CATEGORIES.len() as i32 + 2;
+const CATEGORY_ROWS: i32 = CATEGORY_LEGEND + 1;
 
 /// The most rows a category's page holds: six and the legend are as tall as
 /// nine rows, the most the options window has room for (`page_window`), so
@@ -1226,23 +1214,17 @@ fn value_text(vui: &Vui, item: i32) -> Option<Vec<u16>> {
         }),
         26 => on_off(crate::settings::vsync()),
         29 => on_off(c.update_notices),
-        31 => on_off(c.target_of_target),
-        42 => on_off(c.mana_bars),
-        44 => on_off(c.minimap),
-        45 => on_off(c.quest_markers),
-        46 => on_off(c.quest_tracker),
         34 => wide(if c.overlapping_names { "Show" } else { "Hide" }),
         35 => on_off(c.mipmaps),
         36 => on_off(c.flora),
         37 => on_off(c.environment),
-        43 => on_off(c.map_markers),
-        47 => match c.voice {
-            crate::settings::VoiceChat::Off => on_off(false),
-            crate::settings::VoiceChat::PushToTalk => wide("Push to Talk"),
-            crate::settings::VoiceChat::OpenMic => wide("Open Mic"),
-        },
-        49 => on_off(c.voice_demo),
+        46 => on_off(c.shadows),
         38 => wide(if c.loading_longer { "Longer" } else { "Instant" }),
+        39 => wide(&format!("x{}", c.render_scale)),
+        40 => wide(match c.hud {
+            render::ui::HudFilter::Nearest => "Nearest",
+            render::ui::HudFilter::Sharp => "Sharp",
+        }),
         30 => wide(match c.text {
             render::ui::TextFilter::Sharp => "Sharp",
             render::ui::TextFilter::Smooth => "Smooth",
@@ -1253,20 +1235,11 @@ fn value_text(vui: &Vui, item: i32) -> Option<Vec<u16>> {
     })
 }
 
-/// What the Sound page says beside its legend on a voice row: the keys that
-/// talk (the Controls page's), and what the demo is (the user's: "labelled in
-/// the UI as a demo").
-fn voice_note(item: i32) -> String {
-    if item == 49 {
-        return "eqoaclassic's: anyone who knows your group or room can join".to_string();
-    }
-    // natively nothing cancels the voices' echo (crate `voice`)
-    if !cfg!(target_arch = "wasm32") && crate::settings::client().voice == crate::settings::VoiceChat::OpenMic {
-        return "Open Mic: wear headphones (no echo cancelling here)".to_string();
-    }
-    let b = crate::settings::binds();
-    let key = |id: &str| crate::binds::row_named(id).and_then(|r| b.key(r)).map_or("-".to_string(), crate::binds::display);
-    format!("Hold {} (group) or {} (room) to talk", key("push_to_talk"), key("push_to_talk_room"))
+/// What Video's page says beside Back while Render Scale is chosen: the
+/// scale the frame is drawn at, when that is less than the one asked (the
+/// window too large for it, `render::scale::fit`).
+fn scale_note(asked: u32, drawn: u32) -> Option<String> {
+    (drawn < asked).then(|| format!("Drawn at x{drawn} at this size"))
 }
 
 /// Output Device's value for the system's default ("System Default" is too
@@ -1299,8 +1272,6 @@ fn slider_at(item: i32) -> Option<(f32, Option<u16>)> {
         23 => (at(c.entity_slots as f32, ENTITY_SLOTS_GAME as f32, ENTITY_SLOTS_MAX as f32), Some(c.entity_slots as u16)),
         24 => (at(c.entity_view as f32, ENTITY_VIEW_GAME as f32, ENTITY_VIEW_MAX as f32), Some(c.entity_view)),
         27 => name_distance_slider(&c),
-        // Voice Volume: 0 to 200%, the voices' own (100%) in the middle
-        50 => (c.voice_volume as f32 / crate::settings::VOICE_VOLUME_MAX as f32, Some(c.voice_volume as u16 * 10)),
         _ => return None,
     })
 }
@@ -1492,7 +1463,7 @@ mod tests {
         press(&mut w, &mut o, key::LEFT, &mut cues);
         assert!(cues.is_empty(), "left and right are nothing on the categories: {cues:?}");
         assert_eq!(settings::client(), settings::ClientOptions::default());
-        // Video: Display, Brightness, Frame Rate, VSync
+        // Video: Display, Brightness, Frame Rate, VSync, Render Scale, Loading Screens
         press(&mut w, &mut o, key::CROSS, &mut cues);
         assert_eq!((w.page, w.cat, w.row, w.item), (3, Some(0), 0, 33), "Video, on Display");
         assert_eq!(cues.last(), Some(&8));
@@ -1530,17 +1501,30 @@ mod tests {
         assert!(settings::vsync(), "and back: two values");
         press(&mut w, &mut o, key::RIGHT, &mut cues);
         press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 38, "Loading Screens, on Video since Minimap took its place on UI");
+        assert_eq!(w.item, 39, "Render Scale");
+        assert_eq!((settings::client().render_scale, value_text(&vui, 39)), (1, Some(wide("x1"))), "x1, the game's picture as drawn");
+        for want in [2, 4, 1] {
+            press(&mut w, &mut o, key::RIGHT, &mut cues);
+            assert_eq!((settings::client().render_scale, cues.last()), (want, Some(&11)), "round 1, 2 and 4");
+        }
+        press(&mut w, &mut o, key::LEFT, &mut cues);
+        assert_eq!((settings::client().render_scale, value_text(&vui, 39)), (4, Some(wide("x4"))), "and the other way");
+        assert_eq!(w.page_note(0), None, "drawn at the scale asked: nothing said");
+        press(&mut w, &mut o, key::LEFT, &mut cues);
+        press(&mut w, &mut o, key::LEFT, &mut cues);
+        assert_eq!(settings::client().render_scale, 1);
+        press(&mut w, &mut o, key::DOWN, &mut cues);
+        assert_eq!(w.item, 38, "Loading Screens");
         assert!(settings::loading_longer(), "Longer, the default: a long trip's screen held");
         press(&mut w, &mut o, key::RIGHT, &mut cues);
         assert_eq!((settings::loading_longer(), cues.last()), (false, Some(&11)), "Instant");
         press(&mut w, &mut o, key::LEFT, &mut cues);
         assert!(settings::loading_longer(), "and back: two values");
         press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!((w.row, cues.last()), (4, Some(&9)), "Video's last row");
+        assert_eq!((w.row, cues.last()), (5, Some(&9)), "Video's last row (six, a page's most)");
         press(&mut w, &mut o, key::TRIANGLE, &mut cues);
         assert_eq!((w.page, w.cat, w.cat_sel, w.item), (3, None, 0, -1), "back to the categories, Video still lit");
-        // World: Fog, Mipmaps, Flora, Environment, Art, Map Markers
+        // World: Fog, Mipmaps, Flora, Environment, Shadows, Art
         press(&mut w, &mut o, key::DOWN, &mut cues);
         press(&mut w, &mut o, key::CROSS, &mut cues);
         assert_eq!((w.cat, w.item), (Some(1), 20), "World, Fog");
@@ -1581,6 +1565,13 @@ mod tests {
         press(&mut w, &mut o, key::LEFT, &mut cues);
         assert!(settings::client().environment, "and back: two values");
         press(&mut w, &mut o, key::DOWN, &mut cues);
+        assert_eq!(w.item, 46, "Shadows");
+        assert!(settings::client().shadows, "on: the game's");
+        press(&mut w, &mut o, key::RIGHT, &mut cues);
+        assert_eq!((settings::client().shadows, settings::client().environment, settings::client().flora, cues.last()), (false, true, true, Some(&11)), "off, the others still on");
+        press(&mut w, &mut o, key::LEFT, &mut cues);
+        assert!(settings::client().shadows, "and back: two values");
+        press(&mut w, &mut o, key::DOWN, &mut cues);
         assert_eq!(w.item, 25, "Art, on World since 2026-10-25");
         assert_eq!(settings::art(), esf::Era::Frontiers, "Frontiers', the disc the game runs off");
         press(&mut w, &mut o, key::RIGHT, &mut cues);
@@ -1588,17 +1579,10 @@ mod tests {
         press(&mut w, &mut o, key::LEFT, &mut cues);
         assert_eq!(settings::art(), esf::Era::Frontiers, "and back: two values");
         press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 43, "Map Markers");
-        assert!(settings::client().map_markers, "on: the camps and coaches marked");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!((settings::client().map_markers, cues.last()), (false, Some(&11)), "off");
-        press(&mut w, &mut o, key::LEFT, &mut cues);
-        assert!(settings::client().map_markers, "and back: two values");
-        press(&mut w, &mut o, key::DOWN, &mut cues);
         assert_eq!((w.row, cues.last()), (5, Some(&9)), "World's last row");
         press(&mut w, &mut o, key::TRIANGLE, &mut cues);
         assert_eq!((w.page, w.cat, w.cat_sel, w.item), (3, None, 1, -1), "back to the categories, World still lit");
-        // UI: Ability Bars
+        // UI: Ability Bars, Update Notices, Text, HUD
         press(&mut w, &mut o, key::DOWN, &mut cues);
         press(&mut w, &mut o, key::CROSS, &mut cues);
         assert_eq!((w.cat, w.item), (Some(2), 22), "UI, Ability Bars");
@@ -1611,28 +1595,6 @@ mod tests {
         assert_eq!(settings::ability_bars(), 4, "and the other way");
         assert_eq!(cues.last(), Some(&11));
         press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 31, "Target of Target");
-        assert!(!settings::client().target_of_target, "off: the game's target bar alone");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!((settings::client().target_of_target, cues.last()), (true, Some(&11)), "on");
-        press(&mut w, &mut o, key::LEFT, &mut cues);
-        assert!(!settings::client().target_of_target, "and back: two values");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 42, "Mana Bars");
-        assert!(settings::client().mana_bars, "on: the power gauges where the server sends power");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!((settings::client().mana_bars, cues.last()), (false, Some(&11)), "off");
-        press(&mut w, &mut o, key::LEFT, &mut cues);
-        assert!(settings::client().mana_bars, "and back: two values");
-        press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 44, "Minimap");
-        assert!(settings::client().minimap, "on: the map round the player under the quick menus");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!((settings::client().minimap, cues.last()), (false, Some(&11)), "off");
-        press(&mut w, &mut o, key::LEFT, &mut cues);
-        assert!(settings::client().minimap, "and back: two values");
-        press(&mut w, &mut o, key::DOWN, &mut cues);
         assert_eq!(w.item, 29, "Update Notices");
         assert!(settings::update_notices(), "on: the game asks to restart into a newer build");
         press(&mut w, &mut o, key::RIGHT, &mut cues);
@@ -1641,15 +1603,21 @@ mod tests {
         assert!(settings::update_notices(), "and back: two values");
         press(&mut w, &mut o, key::RIGHT, &mut cues);
         press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 30, "Text, on UI since Display took its place on Video");
+        assert_eq!(w.item, 30, "Text, back on UI since Render Scale took its place on Video");
         assert_eq!(settings::client().text, render::ui::TextFilter::Sharp, "Sharp, the default");
         press(&mut w, &mut o, key::RIGHT, &mut cues);
         assert_eq!((settings::client().text, cues.last()), (render::ui::TextFilter::Smooth, Some(&11)), "Smooth");
         press(&mut w, &mut o, key::LEFT, &mut cues);
         assert_eq!(settings::client().text, render::ui::TextFilter::Sharp, "and back: two values");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
         press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!((w.row, cues.last()), (5, Some(&9)), "UI's last row (six, a page's most)");
+        assert_eq!(w.item, 40, "HUD");
+        assert_eq!((settings::client().hud, value_text(&vui, 40)), (render::ui::HudFilter::Nearest, Some(wide("Nearest"))), "Nearest, the game's and the default");
+        press(&mut w, &mut o, key::RIGHT, &mut cues);
+        assert_eq!((settings::client().hud, value_text(&vui, 40), cues.last()), (render::ui::HudFilter::Sharp, Some(wide("Sharp")), Some(&11)), "Sharp");
+        press(&mut w, &mut o, key::LEFT, &mut cues);
+        assert_eq!(settings::client().hud, render::ui::HudFilter::Nearest, "and back: two values");
+        press(&mut w, &mut o, key::DOWN, &mut cues);
+        assert_eq!((w.row, cues.last()), (3, Some(&9)), "UI's last row");
         press(&mut w, &mut o, key::TRIANGLE, &mut cues);
         // Controller: Controller Focus, Capture Controller
         press(&mut w, &mut o, key::DOWN, &mut cues);
@@ -1781,66 +1749,11 @@ mod tests {
         assert_eq!(w.item, 32, "Output Device");
         assert_eq!(value_text(&vui, 32), Some(wide(SYSTEM_DEFAULT)), "the system's default");
         assert!(w.page_note(6).is_some_and(|n| n.starts_with("Plays on ") || n == "No output now"), "where it plays, beside Back");
-        // Voice Chat: Off (the user's), round Push to Talk and Open Mic
         press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 47, "Voice Chat");
-        assert_eq!((settings::client().voice, value_text(&vui, 47)), (settings::VoiceChat::Off, Some(wide(vui.words.get(552, vui.language)))), "off until turned on");
-        assert_eq!(w.page_note(6).as_deref(), Some("Hold V (group) or N (room) to talk"), "the keys that talk, beside Back");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!((settings::client().voice, value_text(&vui, 47), cues.last()), (settings::VoiceChat::PushToTalk, Some(wide("Push to Talk")), Some(&11)));
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!(value_text(&vui, 47), Some(wide("Open Mic")));
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!(settings::client().voice, settings::VoiceChat::Off, "and round");
-        press(&mut w, &mut o, key::LEFT, &mut cues);
-        assert_eq!(settings::client().voice, settings::VoiceChat::OpenMic, "left goes round the other way");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        // Voice Demo: off, turned over, said to be a demo
-        press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 49, "Voice Demo");
-        assert!(w.page_note(6).is_some_and(|n| n.contains("anyone")), "a demo, and said so");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert!(settings::client().voice_demo);
-        press(&mut w, &mut o, key::LEFT, &mut cues);
-        assert!(!settings::client().voice_demo);
-        // Voice Volume: a slider by tenths, 100% the voices' own, to 200%
-        press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 50, "Voice Volume");
-        assert_eq!(slider_at(50), Some((0.5, Some(100))));
-        for _ in 0..10 {
-            press(&mut w, &mut o, key::RIGHT, &mut cues);
-        }
-        assert_eq!(slider_at(50), Some((1.0, Some(200))));
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!(cues.last(), Some(&9), "200% its end");
-        for _ in 0..10 {
-            press(&mut w, &mut o, key::LEFT, &mut cues);
-        }
-        assert_eq!(settings::client().voice_volume, settings::VOICE_VOLUME_GAME);
-        press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!((w.row, cues.last()), (4, Some(&9)), "Sound's last row");
-        press(&mut w, &mut o, key::TRIANGLE, &mut cues);
-        // Quests: Quest Markers
-        press(&mut w, &mut o, key::DOWN, &mut cues);
-        press(&mut w, &mut o, key::CROSS, &mut cues);
-        assert_eq!((w.cat, w.item), (Some(7), 45), "Quests, Quest Markers");
-        assert!(settings::client().quest_markers, "on: the map's marks where the server sends them");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!((settings::client().quest_markers, cues.last()), (false, Some(&11)), "off");
-        press(&mut w, &mut o, key::LEFT, &mut cues);
-        assert!(settings::client().quest_markers, "and back: two values");
-        press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!(w.item, 46, "Quest Tracker");
-        assert!(settings::client().quest_tracker, "on: the HUD's list where the server sends it");
-        press(&mut w, &mut o, key::RIGHT, &mut cues);
-        assert_eq!((settings::client().quest_tracker, cues.last()), (false, Some(&11)), "off");
-        press(&mut w, &mut o, key::LEFT, &mut cues);
-        assert!(settings::client().quest_tracker, "and back: two values");
-        press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!((w.row, cues.last()), (1, Some(&9)), "Quests' last row");
+        assert_eq!((w.row, cues.last()), (1, Some(&9)), "Sound's last row");
         press(&mut w, &mut o, key::TRIANGLE, &mut cues);
         press(&mut w, &mut o, key::DOWN, &mut cues);
-        assert_eq!((w.cat_sel, cues.last()), (7, Some(&9)), "Quests, the last category");
+        assert_eq!((w.cat_sel, cues.last()), (6, Some(&9)), "Sound, the last category");
         // Triangle: the menu, then closed with every setting put back
         press(&mut w, &mut o, key::TRIANGLE, &mut cues);
         assert_eq!((w.page, w.sel), (-1, 3), "the menu, on Extended");
@@ -1893,6 +1806,17 @@ mod tests {
         assert_eq!(kept, "lod=on\nbrightness=4\ncamera_distance=11\ncamera_turn=125\nfog=4\n");
         assert_eq!(GameOptions::from_card(&testing::kept("game.opt").unwrap()).unwrap().auto_attack, 1);
         testing::reset(false);
+    }
+
+    /// Video's note while Render Scale is chosen: the scale the frame is
+    /// drawn at only when it is less than the one asked; the control, drawn
+    /// as asked (or nothing asked), says nothing.
+    #[test]
+    fn render_scale_says_when_it_is_drawn_at_less() {
+        assert_eq!(scale_note(4, 3), Some("Drawn at x3 at this size".to_string()));
+        assert_eq!(scale_note(2, 1), Some("Drawn at x1 at this size".to_string()));
+        assert_eq!(scale_note(4, 4), None);
+        assert_eq!(scale_note(1, 1), None);
     }
 
     /// Output Device goes round the system default and the devices the
@@ -1948,6 +1872,13 @@ mod tests {
         w.open(&vui, &r, &o);
         w.sel = 3;
         w.key(&vui, &mut r, &mut o, key::CROSS, 0, &mut cues, &mut ups);
+        // the menu's window holds every category and, a row clear of the
+        // last, the legend (F3 20261026-135758: the eighth on the legend's row)
+        assert_eq!(w.window4.rows, CATEGORIES.len() as i32 + 3, "the categories' window");
+        assert!(CATEGORY_LEGEND > CATEGORIES.len() as i32 + 1 && CATEGORY_LEGEND < w.window4.rows, "the legend under the last category, in the window");
+        let bottom = |w: &Window| w.top_left()[1] + w.size[1];
+        assert_eq!(bottom(&w.window4), bottom(&w.window), "its bottom where the menu's is (the title's menu under it in view)");
+        assert!(w.window4.top_left()[1] < w.window.top_left()[1] && w.window4.top_left()[1] > 24, "grown upward, its title tab on the picture");
         for (k, c) in CATEGORIES.iter().enumerate() {
             w.draw(&vui, &mut r, &o, &mut ups);
             assert_eq!((w.page, w.cat, w.cat_sel), (3, None, k as i32), "{}: on the categories", c.name);
@@ -2138,8 +2069,9 @@ mod tests {
         assert_eq!(w.point([slider + 10.0, y(&w, 1)]), down(1, key::LEFT), "Brightness down");
         assert_eq!(w.point([slider + 130.0, y(&w, 1)]), down(1, key::RIGHT), "Brightness up");
         assert_eq!(w.point([frame + 110.0, y(&w, 2)]), down(2, key::RIGHT), "Frame Rate's value");
-        assert_eq!(w.point([frame + 110.0, y(&w, 4)]), down(4, key::RIGHT), "Loading Screens' value, under VSync since Minimap took its place on UI");
-        assert!(w.point([frame + 110.0, y(&w, 5)]).is_empty(), "the row under Loading Screens: nothing");
+        assert_eq!(w.point([frame + 110.0, y(&w, 4)]), down(4, key::RIGHT), "Loading Screens' value, under VSync");
+        assert_eq!(w.point([frame + 110.0, y(&w, 5)]), down(5, key::RIGHT), "Text's value, under Loading Screens");
+        assert!(w.point([frame + 110.0, y(&w, 6)]).is_empty(), "the row under Text: nothing");
         // World: Fog at 5 of 10 (its knob mid-bar), Flora's and Art's values
         w.key(&vui, &mut r, &mut o, key::TRIANGLE, 0, &mut cues, &mut ups);
         w.cat_sel = 1;
@@ -2210,7 +2142,8 @@ mod tests {
         assert_eq!(CATEGORIES[by_name("Controller")].note, Note::Reads);
         assert_eq!(CATEGORIES[by_name("Characters")].note, Note::Server);
         assert_eq!(CATEGORIES[by_name("Sound")].note, Note::Output);
-        assert!(CATEGORIES.iter().filter(|c| c.note != Note::None).count() == 3, "the three notes only");
+        assert_eq!(CATEGORIES[by_name("Video")].note, Note::Scale);
+        assert!(CATEGORIES.iter().filter(|c| c.note != Note::None).count() == 4, "the four notes only");
         w.cat_sel = by_name("Characters") as i32;
         w.key(&vui, &mut r, &mut o, key::CROSS, 0, &mut cues, &mut ups);
         w.draw(&vui, &mut r, &o, &mut ups);

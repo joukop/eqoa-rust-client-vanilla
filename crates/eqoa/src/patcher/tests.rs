@@ -296,3 +296,154 @@ fn the_bar_ends_full() {
     let s = go(&mut port, &mut Mem::default());
     assert_eq!(s.progress, 1.0);
 }
+
+/// What a page's patch port is (`patcher::web`): each path's body, fetched
+/// over the server's web server.
+fn site(files: &[F]) -> HashMap<String, Vec<u8>> {
+    let mut site = HashMap::new();
+    site.insert("patch/eqoa/eqoa-frontierslive-update.xml.gz".to_string(), gz(manifest(true, files).as_bytes()));
+    site.insert("patch/eqoa/Changes.txt".to_string(), b"New this week: robes.".to_vec());
+    for f in files {
+        site.insert(f.served.to_string(), gz(f.data));
+    }
+    site
+}
+
+/// `replay::play` until a play asks for nothing new, each play into a copy
+/// of the folder and only the last one kept, as `patcher::web` plays it:
+/// the last status and every play's missing paths.
+fn replayed(site: &HashMap<String, Vec<u8>>, mem: &mut Mem) -> (Status, Vec<Vec<String>>) {
+    let mut got = replay::Fetched::new();
+    let mut plays = Vec::new();
+    loop {
+        let mut trial = mem.clone();
+        let (s, missing, _) = replay::play(&cfg(), &got, &mut trial);
+        plays.push(missing.clone());
+        if missing.is_empty() {
+            if s.state == state::DONE {
+                *mem = trial;
+            }
+            return (s, plays);
+        }
+        assert!(plays.len() < 8, "it keeps asking: {plays:?}");
+        for p in missing {
+            let r = site.get(&p).map(|b| (200, b.clone())).ok_or_else(|| format!("{p}: unreachable"));
+            got.insert(p, r);
+        }
+    }
+}
+
+/// In a page `run` is played over what was fetched: the first play asks
+/// for the manifest alone and fails (the control: a play that stood then
+/// would have patched nothing), a later one for the files, and the last
+/// patches the folder as a patch port would have, the release notes and
+/// the record with it; then a second patch fetches no file.
+#[test]
+fn a_page_plays_the_patch_until_it_asks_for_nothing() {
+    let files = two();
+    let site = site(&files);
+    let mut mem = Mem::default();
+    let first = replay::play(&cfg(), &replay::Fetched::new(), &mut mem.clone());
+    assert_ne!(first.0.state, state::DONE, "the control: the first play cannot patch");
+    assert_eq!(first.1, ["patch/eqoa/eqoa-frontierslive-update.xml.gz"]);
+    let (s, plays) = replayed(&site, &mut mem);
+    assert_eq!(s.state, state::DONE, "{:?}", s.err);
+    assert!(s.changed);
+    assert_eq!(s.notes, "New this week: robes.");
+    assert!(plays.iter().flatten().any(|p| p == "s2-1.gz") && plays.iter().flatten().any(|p| p == "words-1.gz"), "{plays:?}");
+    assert_eq!(mem.files.get("S2").map(Vec::as_slice), Some(S2));
+    assert_eq!(mem.files.get("WORDS.TXT").map(Vec::as_slice), Some(WORDS));
+    assert_eq!(mem.writes, 1, "only the last play wrote the folder");
+    assert!(mem.record.is_some());
+    let (s, plays) = replayed(&site, &mut mem);
+    assert_eq!((s.state, s.changed), (state::DONE, false));
+    assert!(!plays.iter().flatten().any(|p| p.ends_with(".gz") && !p.contains("update.xml")), "no file fetched: {plays:?}");
+}
+
+/// A file the web server does not have fails the patch and leaves the
+/// folder as it was (the control: with the file there, it patches).
+#[test]
+fn a_page_patch_missing_a_file_leaves_the_folder() {
+    let files = two();
+    let mut gone = site(&files);
+    gone.remove("words-1.gz");
+    let mut mem = Mem::default();
+    let (s, _) = replayed(&gone, &mut mem);
+    assert_ne!(s.state, state::DONE);
+    assert!(mem.files.is_empty() && mem.writes == 0, "nothing written");
+    let (s, _) = replayed(&site(&files), &mut mem);
+    assert_eq!(s.state, state::DONE, "{:?}", s.err);
+}
+
+/// A page's server whose web site answers the manifest with an error (its
+/// own 404 page: eqoaclassic.com serves no patch) is unreachable, its folder
+/// played as it stands, as a patch port that never answers is: not a failed
+/// patch, whose box's only way on is Restart, at every Play. The control: a
+/// file the manifest lists that the site answers 404 still fails the patch,
+/// as natively, and leaves the folder.
+#[test]
+fn a_site_that_serves_no_patch_is_unreachable() {
+    let manifest = "patch/eqoa/eqoa-frontierslive-update.xml.gz";
+    let mut got = replay::Fetched::new();
+    got.insert(manifest.into(), Ok((404, b"<html><body>404 Not Found</body></html>".to_vec())));
+    let mut mem = Mem::default();
+    let (s, missing, _) = replay::play(&cfg(), &got, &mut mem);
+    assert!(missing.is_empty(), "{missing:?}");
+    assert!(s.unreachable, "{:?}", s.err);
+    assert_ne!(s.state, state::FAILED);
+    assert!(mem.files.is_empty() && mem.writes == 0);
+    // the control: the manifest there, its words file answered 404
+    let files = two();
+    let mut site = site(&files);
+    site.remove("words-1.gz");
+    let mut got = replay::Fetched::new();
+    let (s, last) = loop {
+        let mut trial = Mem::default();
+        let (s, missing, _) = replay::play(&cfg(), &got, &mut trial);
+        if missing.is_empty() {
+            break (s, trial);
+        }
+        for p in missing {
+            let r = site.get(&p).map_or_else(|| Ok((404, b"<html>404</html>".to_vec())), |b| Ok((200, b.clone())));
+            got.insert(p, r);
+        }
+    };
+    assert!(!s.unreachable);
+    assert_eq!(s.state, state::FAILED, "a listed file the site lacks fails the patch");
+    assert!(last.files.is_empty() && last.writes == 0, "the play that stands wrote nothing");
+}
+
+/// In a page only the play that stands is told (`replay::play`'s lines):
+/// the plays before it answer what was not fetched yet with nothing, so
+/// their errors ("Document of the wrong type", "Failed") are not the
+/// patch's, and a page's log would have them in every patch, a good one
+/// too. The control: a patch that fails for real tells its failure.
+#[test]
+fn only_the_play_that_stands_is_told() {
+    fn told(site: &HashMap<String, Vec<u8>>) -> (Status, Vec<String>) {
+        let mut got = replay::Fetched::new();
+        let mem = Mem::default();
+        loop {
+            let (s, missing, said) = replay::play(&cfg(), &got, &mut mem.clone());
+            if missing.is_empty() {
+                return (s, said);
+            }
+            assert!(said.is_empty(), "a play thrown away tells nothing: {said:?}");
+            for p in missing {
+                let r = site.get(&p).map_or_else(|| Ok((404, b"<html>404</html>".to_vec())), |b| Ok((200, b.clone())));
+                got.insert(p, r);
+            }
+        }
+    }
+    let files = two();
+    let (s, said) = told(&site(&files));
+    assert_eq!(s.state, state::DONE, "{:?}", s.err);
+    assert!(said.iter().any(|l| l.contains("Patching with XML")), "{said:?}");
+    assert!(!said.iter().any(|l| l.contains("ERROR CODE") || l.contains("Failed")), "{said:?}");
+    // the control: a listed file the site lacks fails, and the last play says so
+    let mut gone = site(&files);
+    gone.remove("words-1.gz");
+    let (s, said) = told(&gone);
+    assert_eq!(s.state, state::FAILED);
+    assert!(said.iter().any(|l| l.contains("ERROR CODE")), "{said:?}");
+}

@@ -22,13 +22,6 @@ pollster = "1.0.1"
 glam = "0.34.1"
 png = "0.18.1"
 cpal = "0.16"
-# Voice (`voice`): a locked room's H and the demo's group channel (SHA-256,
-# also the updater's download check), and the demo's JSON.
-sha2 = "0.10.9"
-serde_json.workspace = true
-# ... and its engine's interface (crate `voice`: natively the engine itself,
-# in a page the interface alone), named apart from the client's own `voice`
-voice_engine = { package = "voice", path = "../voice" }
 
 # The gamepads natively (SDL's layout, force feedback); a page reads the
 # Gamepad API itself (`padmap`, `web::pad`).
@@ -42,22 +35,22 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
 # release and to the report server (rustls on ring, Mozilla's roots built in),
 # and a download held to the SHA-256 its manifest names.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
-# The voice demo's WebSocket (`voice::demo`), on the same rustls and roots.
-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
+sha2 = "0.10.9"
 
 # The log's pipe (`report`): stderr duplicated and replaced.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
 
 # Windows' Xbox controllers through XInput (`xinput`), which answers a window
-# that is not in front, as Windows.Gaming.Input (gilrs's) does not; and the
-# terminal a program run from one writes to (`attach_console`).
+# that is not in front, as Windows.Gaming.Input (gilrs's) does not; the
+# terminal a program run from one writes to (`attach_console`); and the
+# process's and the machine's memory a report carries (`mem`).
 [target.'cfg(target_os = "macos")'.dependencies]
 # The app menu's Settings… with ⌘, (`macos`): one item added to the menu
 # winit makes, its action on an object of a class of its own. The versions
 # another dependency already brings.
 objc2 = "0.6.5"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSData"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSData", "NSProcessInfo"] }
 # ... and the Dock's picture (`icon`): the program's, as an image of a PNG
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSMenu", "NSMenuItem", "NSResponder", "NSImage"] }
 # A PlayStation controller's motors over IOKit (`hidpad::mac`): gilrs reads
@@ -67,7 +60,7 @@ objc2-core-foundation = { version = "0.3.2", default-features = false, features 
 objc2-io-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "hid"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_HumanInterfaceDevice", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_UI_Input_XboxController"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_HumanInterfaceDevice", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Input_XboxController"] }
 
 # The browser build (`web/build.sh`): the page hands over the player's disc
 # image and the login; sockets go through a WebSocket relay; wgpu falls back
@@ -96,6 +89,8 @@ web-sys = { version = "0.3.106", features = [
     "MessageEvent",
     "Navigator",
     "Performance",
+    "RequestCache",
+    "RequestInit",
     "Response",
     "Storage",
     "WebSocket",

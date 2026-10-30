@@ -226,63 +226,6 @@ pub fn save_login(user: &str, password: &str, on: bool) -> bool {
     }
 }
 
-// ---- the map's waypoints (`map::Map::click`) ------------------------------------------
-
-/// The map's waypoints as this window keeps them (`waypoints.opt`, window n's
-/// `waypoints-<n>.opt`): a line a world, `<world> <x> <z>`, its `gWorldInfo`
-/// index and the point on its ground. The client's own (the game has no
-/// map), kept the moment one is set or cleared and never sent anywhere; a
-/// line that does not read is left out.
-pub fn waypoints() -> Vec<(i32, [f32; 2])> {
-    let Some(b) = store::read(&own_file("waypoints", place())) else { return Vec::new() };
-    String::from_utf8_lossy(&b)
-        .lines()
-        .filter_map(|l| {
-            let mut it = l.split_whitespace();
-            let world = it.next()?.parse().ok()?;
-            let (x, z): (f32, f32) = (it.next()?.parse().ok()?, it.next()?.parse().ok()?);
-            (it.next().is_none() && x.is_finite() && z.is_finite()).then_some((world, [x, z]))
-        })
-        .collect()
-}
-
-/// Keeps this window's waypoints (`waypoints`): whether they were kept.
-pub fn save_waypoints(w: &[(i32, [f32; 2])]) -> bool {
-    let text: String = w.iter().map(|(world, p)| format!("{world} {} {}\n", p[0], p[1])).collect();
-    match store::write(&own_file("waypoints", place()), text.as_bytes()) {
-        Ok(()) => true,
-        Err(e) => {
-            crate::say(&format!("the map's waypoint was not kept: {e}"));
-            false
-        }
-    }
-}
-
-// ---- the quest guide's record (`questguide`) --------------------------------------------
-
-/// The quest guide's file: what it keeps of each character (the quests it
-/// finished, its home city, the kills seen), one line a character
-/// (`questguide::Kept`). One file for every window, as a character is the same
-/// in any of them: read again before each write, so another window's lines
-/// stay.
-const QUEST_GUIDE_FILE: &str = "questguide.opt";
-
-/// The quest guide's file as text (empty when there is none).
-pub fn quest_guide() -> String {
-    store::read(QUEST_GUIDE_FILE).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
-}
-
-/// Keeps the quest guide's file: whether it was kept.
-pub fn save_quest_guide(text: &str) -> bool {
-    match store::write(QUEST_GUIDE_FILE, text.as_bytes()) {
-        Ok(()) => true,
-        Err(e) => {
-            crate::say(&format!("the quest guide's record was not kept: {e}"));
-            false
-        }
-    }
-}
-
 // ---- game.opt's home shard (`VIGameOptions::m_homeShard`) ---------------------------
 
 /// `m_homeShard[64]` at +0x98: the server list's last pick, UTF-16.
@@ -489,38 +432,6 @@ impl FrameRate {
     }
 }
 
-/// Voice Chat (Extended > Sound; the user, F3 pass 18: voice, "off until
-/// turned on", push-to-talk by default with open mic as the option): Off,
-/// nothing asked of the microphone and the server told nothing; Push to Talk,
-/// the group or the room hears the player while its key is held; Open Mic,
-/// both whenever the microphone hears speech (`voice`). Natively nothing
-/// cancels the echo of the voices heard: Open Mic wants headphones.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum VoiceChat {
-    #[default]
-    Off,
-    PushToTalk,
-    OpenMic,
-}
-
-impl VoiceChat {
-    /// The row's order, which left and right step through (and round).
-    pub const ALL: [VoiceChat; 3] = [VoiceChat::Off, VoiceChat::PushToTalk, VoiceChat::OpenMic];
-
-    fn key(self) -> &'static str {
-        match self {
-            VoiceChat::Off => "off",
-            VoiceChat::PushToTalk => "ptt",
-            VoiceChat::OpenMic => "open",
-        }
-    }
-}
-
-/// Voice Volume's steps: tenths of the voices' own level, 0 to twice it, the
-/// voices' own (100%) the default.
-pub const VOICE_VOLUME_MAX: u8 = 20;
-pub const VOICE_VOLUME_GAME: u8 = 10;
-
 /// The Extended page's Controller Focus: which controllers a window of the
 /// client reads (`input::Gamepads`), kept for each window by the place it
 /// takes among the client's windows open on the computer (`multibox`).
@@ -679,31 +590,6 @@ pub struct ClientOptions {
     /// next time the game does (`update`'s check before the title, as ever).
     /// A page's Reload notice the same (`web/main.js`).
     pub update_notices: bool,
-    /// Target of Target (a player's request, the user's option, off by
-    /// default): the target's bar shows whom the target is targeting, as its
-    /// channel says (`Play::target_of_target`)
-    pub target_of_target: bool,
-    /// Mana Bars (a player's request, the user's option, on by default):
-    /// a power gauge under the health of each group member, the target and
-    /// the target of target, from a server that sends others' power
-    /// (`net::session::OP_POWER_BARS`; the game shows only the player's
-    /// own); none where none is sent (Sandstorm).
-    pub mana_bars: bool,
-    /// Minimap (the user's ask, on by default): the map's pictures round the
-    /// player under the quick menus' name plate (`map::mini`); off, none.
-    pub minimap: bool,
-    /// Quest Markers (the user's ask, on by default): the map's "!" at each
-    /// giver of a quest the player may take and "?" where a step of its
-    /// quests is to be done, from a server that sends them
-    /// (`net::session::OP_QUEST_MARKERS`: go-eqoa-server), else the client's
-    /// own guide's (`questguide`: Sandstorm sends no such thing).
-    pub quest_markers: bool,
-    /// Quest Tracker (the user's ask, on by default): the HUD's list of the
-    /// quests under way under the minimap, each step's objectives counted
-    /// ("Bat Eye 0/3"), from a server that sends them
-    /// (`net::session::OP_QUEST_PROGRESS`: go-eqoa-server), else the guide's;
-    /// off, none.
-    pub quest_tracker: bool,
     /// Mipmaps: on, the textures' mip levels sampled as the GS samples them
     /// (`render::gs_lod_k`: the level by depth, blended), which is how the
     /// game is drawn; off, every texel off the base level, sharper and
@@ -712,20 +598,14 @@ pub struct ClientOptions {
     /// Flora: on, the radial flora the game grows round the camera out of
     /// each zone's tables (`vi::flora`, `flora`), as it is drawn; off, none.
     pub flora: bool,
+    /// Shadows: on, the characters' blob shadows as the game draws them
+    /// (`vi::shadow`, `shadows`: within 50 of the eye, on the ground and the
+    /// props under each); off, none.
+    pub shadows: bool,
     /// Environment: on, the effect volumes placed in the world (ground fog,
     /// dust, falling leaves, light shafts, the flocks of birds: `fx`), as the
     /// game draws them; off, none.
     pub environment: bool,
-    /// Map Markers: on, the map (M) marks EQOA-Data's XP camps and every
-    /// coach (`map::markers`), each with a card of what it is under the
-    /// pointer (the user, F3 pass 18: "mark popular xp camps on map with an XP
-    /// icon", "also add all coaches to the map"); off, the map shows neither.
-    /// The map's own key (X, ○) turns it too.
-    pub map_markers: bool,
-    /// Town names on the map (the user, F3 pass 18: "add town names to the
-    /// map too", `map::markers`): the map's own key (T, Select) turns them,
-    /// kept as Map Markers is; on by default.
-    pub map_towns: bool,
     /// Loading Screens: Longer, a long trip (Return Home, a coach, a port of
     /// 200 or more, another world) keeps the loading screen up at least a
     /// second, as a PS2's disc read would (`loading::FAR_HOLD_MS`); Instant,
@@ -737,13 +617,21 @@ pub struct ClientOptions {
     /// PS2's own filtering (F3 20261024-200725: "smooth out the text as per
     /// live").
     pub text: render::ui::TextFilter,
-    /// Voice Chat (`VoiceChat`), Voice Demo (the user, F3 pass 18: "a demo
-    /// mode for sandstorm": eqoaclassic's voice server where the server
-    /// offers none; off by default) and Voice Volume (the voices heard, in
-    /// tenths: 10 their own level).
-    pub voice: VoiceChat,
-    pub voice_demo: bool,
-    pub voice_volume: u8,
+    /// Render Scale (`render::scale`; the user, 2026-10-27: "render scale
+    /// x2, x4"): the whole frame, the world and the 2D layer over it, drawn 1
+    /// (as ever), 2 or 4 times the window's size each way and averaged down to
+    /// it, which smooths every edge, cut-out and thin thing and changes
+    /// nothing else; at less where the window is too large for it
+    /// (`render::scale::fit`).
+    pub render_scale: u8,
+    /// HUD: how the 2D layer's textures other than the fonts are drawn scaled
+    /// to the window (`render::ui::HudFilter`): Nearest, as the GS samples
+    /// them, by default (the user, 2026-10-28: "make nearest the default ...
+    /// since there is a cost": the pregame's screens are this art from edge to
+    /// edge, F3 20261027-213115); or Sharp, every texel as wide as every other,
+    /// as Text's Sharp draws a font (the user, 2026-10-27: "add the sharp
+    /// textures fix like sharp font").
+    pub hud: render::ui::HudFilter,
     /// Output Device, natively (F3 20261024-201433: the game played into
     /// the system's default output, a television, while the player listened
     /// elsewhere): none, the system's default, followed when it changes; or
@@ -751,6 +639,9 @@ pub struct ClientOptions {
     /// (`audio::retarget`). Each window its own.
     pub output: Option<DeviceName>,
 }
+
+/// Render Scale's steps, the first the game's picture as drawn.
+pub const RENDER_SCALES: [u8; 3] = [1, 2, 4];
 
 /// The game's ability bars (with the expansion's second).
 pub const ABILITY_BARS_GAME: u8 = 2;
@@ -809,21 +700,14 @@ impl Default for ClientOptions {
             vsync: true,
             shouts: true,
             update_notices: true,
-            target_of_target: false,
-            mana_bars: true,
-            minimap: true,
-            quest_markers: true,
-            quest_tracker: true,
             text: render::ui::TextFilter::Sharp,
             mipmaps: true,
             flora: true,
+            shadows: true,
             environment: true,
-            map_markers: true,
-            map_towns: true,
             loading_longer: true,
-            voice: VoiceChat::Off,
-            voice_demo: false,
-            voice_volume: VOICE_VOLUME_GAME,
+            render_scale: 1,
+            hud: render::ui::HudFilter::Nearest,
             output: None,
         }
     }
@@ -837,9 +721,9 @@ impl ClientOptions {
     /// only when off, Ability Bars, NPC/PC Display, NPC/PC Distance and
     /// Name Distance only when not the game's, Overlapping Names only when
     /// Show, Art only when it is the 2002 disc's, VSync, Shouts and Update
-    /// Notices only when off, Target of Target only when on, Mana Bars only
-    /// when off, Text only when
-    /// Smooth, and Output Device only when a device is chosen (by its name).
+    /// Notices only when off, Text only when Smooth, Render Scale only above
+    /// 1, HUD only when Nearest, and Output Device only when a device is
+    /// chosen (by its name).
     pub fn to_text(self) -> String {
         let mut s = format!("lod={}\nbrightness={}\ncamera_distance={}\n", if self.lod { "on" } else { "off" }, self.brightness, self.camera_distance);
         if let Some(r) = self.frame_rate {
@@ -890,25 +774,6 @@ impl ClientOptions {
         if !self.update_notices {
             s.push_str("update_notices=off\n");
         }
-        // Target of Target only when on
-        if self.target_of_target {
-            s.push_str("target_of_target=on\n");
-        }
-        // Mana Bars only when off
-        if !self.mana_bars {
-            s.push_str("mana_bars=off\n");
-        }
-        // Minimap only when off
-        if !self.minimap {
-            s.push_str("minimap=off\n");
-        }
-        // Quest Markers and Quest Tracker only when off
-        if !self.quest_markers {
-            s.push_str("quest_markers=off\n");
-        }
-        if !self.quest_tracker {
-            s.push_str("quest_tracker=off\n");
-        }
         if self.text == render::ui::TextFilter::Smooth {
             s.push_str("text=smooth\n");
         }
@@ -920,31 +785,23 @@ impl ClientOptions {
         if !self.flora {
             s.push_str("flora=off\n");
         }
+        // Shadows only when off
+        if !self.shadows {
+            s.push_str("shadows=off\n");
+        }
         if !self.environment {
             s.push_str("environment=off\n");
-        }
-        // Map Markers only when off
-        if !self.map_markers {
-            s.push_str("map_markers=off\n");
-        }
-        // the map's town names only when off
-        if !self.map_towns {
-            s.push_str("map_towns=off\n");
         }
         // Loading Screens only when Instant
         if !self.loading_longer {
             s.push_str("loading=instant\n");
         }
-        // Voice Chat only when on, Voice Demo only when on, Voice Volume only
-        // when not the voices' own
-        if self.voice != VoiceChat::Off {
-            s.push_str(&format!("voice={}\n", self.voice.key()));
+        // Render Scale only above 1, HUD only when Sharp
+        if self.render_scale != 1 {
+            s.push_str(&format!("render_scale={}\n", self.render_scale));
         }
-        if self.voice_demo {
-            s.push_str("voice_demo=on\n");
-        }
-        if self.voice_volume != VOICE_VOLUME_GAME {
-            s.push_str(&format!("voice_volume={}\n", self.voice_volume));
+        if self.hud == render::ui::HudFilter::Sharp {
+            s.push_str("hud=sharp\n");
         }
         if let Some(d) = self.output {
             s.push_str(&format!("output={}\n", d.as_str()));
@@ -998,42 +855,25 @@ impl ClientOptions {
                 ("update_notices", "off") => c.update_notices = false,
                 ("overlapping_names", "show") => c.overlapping_names = true,
                 ("overlapping_names", "hide") => c.overlapping_names = false,
-                ("target_of_target", "on") => c.target_of_target = true,
-                ("target_of_target", "off") => c.target_of_target = false,
-                ("mana_bars", "on") => c.mana_bars = true,
-                ("mana_bars", "off") => c.mana_bars = false,
-                ("minimap", "on") => c.minimap = true,
-                ("minimap", "off") => c.minimap = false,
-                ("quest_markers", "on") => c.quest_markers = true,
-                ("quest_markers", "off") => c.quest_markers = false,
-                ("quest_tracker", "on") => c.quest_tracker = true,
-                ("quest_tracker", "off") => c.quest_tracker = false,
                 ("text", "sharp") => c.text = render::ui::TextFilter::Sharp,
                 ("text", "smooth") => c.text = render::ui::TextFilter::Smooth,
                 ("mipmaps", "on") => c.mipmaps = true,
                 ("mipmaps", "off") => c.mipmaps = false,
                 ("flora", "on") => c.flora = true,
                 ("flora", "off") => c.flora = false,
+                ("shadows", "on") => c.shadows = true,
+                ("shadows", "off") => c.shadows = false,
                 ("environment", "on") => c.environment = true,
                 ("environment", "off") => c.environment = false,
-                ("map_markers", "on") => c.map_markers = true,
-                ("map_markers", "off") => c.map_markers = false,
-                ("map_towns", "on") => c.map_towns = true,
-                ("map_towns", "off") => c.map_towns = false,
                 ("loading", "longer") => c.loading_longer = true,
                 ("loading", "instant") => c.loading_longer = false,
-                ("voice", v) => {
-                    if let Some(m) = VoiceChat::ALL.into_iter().find(|m| m.key() == v) {
-                        c.voice = m;
+                ("render_scale", v) => {
+                    if let Some(k) = v.parse::<u8>().ok().filter(|k| RENDER_SCALES.contains(k)) {
+                        c.render_scale = k;
                     }
                 }
-                ("voice_demo", "on") => c.voice_demo = true,
-                ("voice_demo", "off") => c.voice_demo = false,
-                ("voice_volume", v) => {
-                    if let Some(n) = v.parse::<u8>().ok().filter(|&n| n <= VOICE_VOLUME_MAX) {
-                        c.voice_volume = n;
-                    }
-                }
+                ("hud", "nearest") => c.hud = render::ui::HudFilter::Nearest,
+                ("hud", "sharp") => c.hud = render::ui::HudFilter::Sharp,
                 ("output", v) if !v.is_empty() => c.output = Some(DeviceName::new(v)),
                 ("ability_bars", v) => {
                     if let Some(n) = v.parse::<u8>().ok().filter(|&n| (ABILITY_BARS_GAME as i32..=crate::hudmenu::MAX_BARS).contains(&(n as i32))) {
@@ -1190,6 +1030,12 @@ pub fn vsync() -> bool {
     cfg!(target_arch = "wasm32") || client().vsync
 }
 
+/// The display's refresh, in ms (`set_display_refresh`; a page's is taken
+/// as 60 Hz).
+pub fn display_gap() -> f64 {
+    DISPLAY_GAP.with(|g| g.get())
+}
+
 /// The display's refresh as the window's monitor reports it (mHz; 60 Hz when
 /// it reports none), the gap the loop keeps with VSync off and Frame Rate the
 /// display's.
@@ -1297,57 +1143,6 @@ pub fn set_shouts(heard: bool) -> Result<(), String> {
     save_client()
 }
 
-/// Whether the map marks the XP camps and the coaches (Map Markers).
-pub fn map_markers() -> bool {
-    client().map_markers
-}
-
-/// Map Markers turned (the map's own key), and kept at once, as the waypoints
-/// are.
-pub fn set_map_markers(on: bool) -> Result<(), String> {
-    let mut c = client();
-    c.map_markers = on;
-    set_client(c);
-    save_client()
-}
-
-/// Whether the map names the towns.
-pub fn map_towns() -> bool {
-    client().map_towns
-}
-
-/// The map's town names turned (its own key), and kept at once.
-pub fn set_map_towns(on: bool) -> Result<(), String> {
-    let mut c = client();
-    c.map_towns = on;
-    set_client(c);
-    save_client()
-}
-
-/// Whether the map shows the quest marks a server sends (Quest Markers).
-pub fn quest_markers() -> bool {
-    client().quest_markers
-}
-
-/// Quest Markers turned (the map's own key), and kept at once, as Map
-/// Markers is.
-pub fn set_quest_markers(on: bool) -> Result<(), String> {
-    let mut c = client();
-    c.quest_markers = on;
-    set_client(c);
-    save_client()
-}
-
-/// Voice Chat and Voice Demo as the voice window chose them, kept at once
-/// (the window is no page's row that Save Changes keeps).
-pub fn set_voice(chat: VoiceChat, demo: bool) -> Result<(), String> {
-    let mut c = client();
-    c.voice = chat;
-    c.voice_demo = demo;
-    set_client(c);
-    save_client()
-}
-
 /// Whether the game asks to restart into a newer build (Update Notices).
 pub fn update_notices() -> bool {
     client().update_notices
@@ -1404,7 +1199,7 @@ pub fn describe() -> String {
         FrameRate::Display => "the display's",
     };
     format!(
-        "level of detail {}, brightness {} of {BRIGHTNESS_STEPS}, fog {} of {}{}, frame rate {rate}{}, vsync {}, camera distance {}, camera turn speed {}%, screen shake {}, controller focus {}, capture controller {}, sound in background {}, output device {}, ability bars {}, npc/pc display {}, npc/pc view distance {}, name distance {}, overlapping names {}, art {}, update notices {}, shouts {}, target of target {}, mana bars {}, minimap {}, quest markers {}, quest tracker {}, text {}, mipmaps {}, flora {}, environment {}, map markers {}, map towns {}, loading screens {}, voice chat {}, voice demo {}, voice volume {}%; {}",
+        "level of detail {}, brightness {} of {BRIGHTNESS_STEPS}, fog {} of {}{}, frame rate {rate}{}, vsync {}, render scale x{}{}, camera distance {}, camera turn speed {}%, screen shake {}, controller focus {}, capture controller {}, sound in background {}, output device {}, ability bars {}, npc/pc display {}, npc/pc view distance {}, name distance {}, overlapping names {}, art {}, update notices {}, shouts {}, text {}, hud {}, mipmaps {}, flora {}, shadows {}, environment {}, loading screens {}; {}",
         if c.lod { "on" } else { "off" },
         c.brightness,
         c.fog,
@@ -1412,6 +1207,11 @@ pub fn describe() -> String {
         if c.fog == crate::fog::GAME { " (the game's)" } else if c.fog == 0 { " (off)" } else { "" },
         if c.frame_rate.is_none() { " (not chosen)" } else { "" },
         if cfg!(target_arch = "wasm32") { "the browser's" } else if c.vsync { "on" } else { "off" },
+        c.render_scale,
+        match render::scale::would_draw(c.render_scale as u32) {
+            k if k != c.render_scale as u32 => format!(" (drawn at x{k})"),
+            _ => String::new(),
+        },
         c.camera_distance,
         c.camera_turn,
         if c.screen_shake { "on" } else { "off" },
@@ -1430,28 +1230,19 @@ pub fn describe() -> String {
         },
         if c.update_notices { "on" } else { "off" },
         if c.shouts { "heard" } else { "ignored (kept)" },
-        if c.target_of_target { "on" } else { "off" },
-        if c.mana_bars { "on" } else { "off" },
-        if c.minimap { "on" } else { "off" },
-        if c.quest_markers { "on" } else { "off" },
-        if c.quest_tracker { "on" } else { "off" },
         match c.text {
             render::ui::TextFilter::Sharp => "sharp",
             render::ui::TextFilter::Smooth => "smooth",
         },
+        match c.hud {
+            render::ui::HudFilter::Nearest => "nearest",
+            render::ui::HudFilter::Sharp => "sharp",
+        },
         if c.mipmaps { "on" } else { "off" },
         if c.flora { "on" } else { "off" },
+        if c.shadows { "on" } else { "off" },
         if c.environment { "on" } else { "off" },
-        if c.map_markers { "on" } else { "off" },
-        if c.map_towns { "on" } else { "off" },
         if c.loading_longer { "longer" } else { "instant" },
-        match c.voice {
-            VoiceChat::Off => "off",
-            VoiceChat::PushToTalk => "push to talk",
-            VoiceChat::OpenMic => "open mic",
-        },
-        if c.voice_demo { "on" } else { "off" },
-        c.voice_volume as u32 * 10,
         kept_where()
     )
 }
@@ -1908,11 +1699,6 @@ mod tests {
             let c = ClientOptions::from_text(bad);
             assert!(c.shouts && c.update_notices, "{bad}: on, the defaults");
         }
-        assert_eq!(ClientOptions { target_of_target: true, ..Default::default() }.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\ntarget_of_target=on\n", "Target of Target only when on");
-        assert!(ClientOptions::from_text("target_of_target=on").target_of_target && !ClientOptions::from_text("target_of_target=off").target_of_target);
-        for bad in ["target_of_target=yes", "target_of_target=1"] {
-            assert!(!ClientOptions::from_text(bad).target_of_target, "{bad}: off, the default");
-        }
         assert_eq!(ClientOptions { overlapping_names: true, ..Default::default() }.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\noverlapping_names=show\n", "Overlapping Names only when Show");
         assert!(ClientOptions::from_text("overlapping_names=show").overlapping_names && !ClientOptions::from_text("overlapping_names=hide").overlapping_names);
         for bad in ["overlapping_names=on", "overlapping_names=1", "overlapping_names=all"] {
@@ -1931,7 +1717,7 @@ mod tests {
             "Screen Shake only off, Capture Controller only on"
         );
         testing::reset(false);
-        assert_eq!(describe(), "level of detail on, brightness 5 of 10, fog 5 of 10 (the game's), frame rate the display's (not chosen), vsync on, camera distance 11, camera turn speed 100%, screen shake on, controller focus auto, capture controller off, sound in background on, output device the system default, ability bars 2, npc/pc display 24, npc/pc view distance 100, name distance 22, overlapping names hide, art frontiers, update notices on, shouts heard, target of target off, mana bars on, minimap on, quest markers on, quest tracker on, text sharp, mipmaps on, flora on, environment on, map markers on, map towns on, loading screens longer, voice chat off, voice demo off, voice volume 100%; kept in the page's storage");
+        assert_eq!(describe(), "level of detail on, brightness 5 of 10, fog 5 of 10 (the game's), frame rate the display's (not chosen), vsync on, render scale x1, camera distance 11, camera turn speed 100%, screen shake on, controller focus auto, capture controller off, sound in background on, output device the system default, ability bars 2, npc/pc display 24, npc/pc view distance 100, name distance 22, overlapping names hide, art frontiers, update notices on, shouts heard, text sharp, hud nearest, mipmaps on, flora on, shadows on, environment on, loading screens longer; kept in the page's storage");
         testing::reset(true);
         assert!(describe().ends_with("refused: nothing is kept"));
         testing::reset(false);
@@ -1965,54 +1751,22 @@ mod tests {
         }
     }
 
-    /// Quest Markers, on by default, kept only when off; anything but on or
-    /// off leaves it on.
+    /// Shadows, on by default (the game's), kept only when off; anything
+    /// but on or off leaves it on.
     #[test]
-    fn quest_markers_kept_only_when_off() {
-        assert!(ClientOptions::default().quest_markers, "on by default");
-        assert_eq!(ClientOptions { quest_markers: false, ..Default::default() }.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\nquest_markers=off\n");
-        assert!(!ClientOptions::from_text("quest_markers=off").quest_markers);
-        assert!(ClientOptions::from_text("quest_markers=on") == ClientOptions::default());
-        for bad in ["quest_markers=0", "quest_markers=no", "quest_markers="] {
-            assert!(ClientOptions::from_text(bad).quest_markers, "{bad}: on, the default");
+    fn shadows_kept_only_when_off() {
+        let d = ClientOptions::default();
+        assert!(d.shadows, "on, the game's");
+        assert_eq!(ClientOptions { shadows: false, ..Default::default() }.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\nshadows=off\n");
+        assert!(!d.to_text().contains("shadows"), "the default not written");
+        let c = ClientOptions::from_text("shadows=off");
+        assert!(!c.shadows && c.flora && c.environment, "Shadows alone");
+        assert!(ClientOptions::from_text("shadows=on") == d);
+        for bad in ["shadows=0", "shadows=", "shadow=off"] {
+            assert!(ClientOptions::from_text(bad).shadows, "{bad}: on, the default");
         }
-    }
-
-    /// Quest Tracker, on by default, kept only when off, apart from Quest
-    /// Markers; anything but on or off leaves it on.
-    #[test]
-    fn quest_tracker_kept_only_when_off() {
-        assert!(ClientOptions::default().quest_tracker, "on by default");
-        assert_eq!(ClientOptions { quest_tracker: false, ..Default::default() }.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\nquest_tracker=off\n");
-        let off = ClientOptions::from_text("quest_tracker=off");
-        assert!(!off.quest_tracker && off.quest_markers, "the tracker off, the marks kept");
-        for bad in ["quest_tracker=0", "quest_tracker="] {
-            assert!(ClientOptions::from_text(bad).quest_tracker, "{bad}: on, the default");
-        }
-    }
-
-    /// Mana Bars, on by default, kept only when off; anything but on or off
-    /// leaves it on.
-    #[test]
-    fn minimap_kept_only_when_off() {
-        assert!(ClientOptions::default().minimap, "on by default");
-        assert_eq!(ClientOptions { minimap: false, ..Default::default() }.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\nminimap=off\n");
-        assert!(!ClientOptions::from_text("minimap=off").minimap);
-        assert!(ClientOptions::from_text("minimap=on") == ClientOptions::default());
-        for bad in ["minimap=0", "minimap=no", "minimap="] {
-            assert!(ClientOptions::from_text(bad).minimap, "{bad}: on, the default");
-        }
-    }
-
-    #[test]
-    fn mana_bars_kept_only_when_off() {
-        assert!(ClientOptions::default().mana_bars, "on by default");
-        assert_eq!(ClientOptions { mana_bars: false, ..Default::default() }.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\nmana_bars=off\n");
-        assert!(!ClientOptions::from_text("mana_bars=off").mana_bars);
-        assert!(ClientOptions::from_text("mana_bars=on") == ClientOptions::default());
-        for bad in ["mana_bars=0", "mana_bars=no", "mana_bars="] {
-            assert!(ClientOptions::from_text(bad).mana_bars, "{bad}: on, the default");
-        }
+        // the control: Flora off is not Shadows off
+        assert!(ClientOptions::from_text("flora=off").shadows);
     }
 
     /// Flora and Environment, on by default, each kept only when off;
@@ -2034,44 +1788,74 @@ mod tests {
         }
     }
 
-    /// Map Markers is on unless chosen off, kept only when off; a value not
-    /// understood leaves it on. The control: off read back off.
-    /// Voice Chat is off by default (the user's), kept only when on, Voice
-    /// Demo only when on and Voice Volume only when not the voices' own; a
-    /// value read back as written (the controls: one it does not know, or a
-    /// volume past twice, is the default).
+    /// Render Scale, x1 by default, kept only above 1 and only as one of its
+    /// steps; HUD, Nearest by default (since 2026-10-28; Sharp the day
+    /// before), kept only when Sharp, and a file from the builds that wrote
+    /// `hud=nearest` (Sharp their default) reads the same; neither moves the
+    /// other, and anything else leaves each at its default.
     #[test]
-    fn voice_settings_kept_only_when_chosen() {
+    fn render_scale_and_hud_kept_only_off_their_defaults() {
+        use render::ui::HudFilter;
         let d = ClientOptions::default();
-        assert_eq!((d.voice, d.voice_demo, d.voice_volume), (VoiceChat::Off, false, VOICE_VOLUME_GAME), "off, no demo, the voices' own level");
-        assert!(!d.to_text().contains("voice"), "the defaults write nothing of voice: {:?}", d.to_text());
-        for m in [VoiceChat::PushToTalk, VoiceChat::OpenMic] {
-            let c = ClientOptions { voice: m, voice_demo: true, voice_volume: 15, ..Default::default() };
-            let back = ClientOptions::from_text(&c.to_text());
-            assert_eq!((back.voice, back.voice_demo, back.voice_volume), (m, true, 15), "{:?}", c.to_text());
+        assert_eq!((d.render_scale, d.hud, d.text), (1, HudFilter::Nearest, render::ui::TextFilter::Sharp), "x1; the HUD Nearest, the game's");
+        let head = "lod=on\nbrightness=5\ncamera_distance=11\n";
+        assert_eq!(d.to_text(), head, "none written at their defaults");
+        assert_eq!(ClientOptions { render_scale: 2, ..d }.to_text(), format!("{head}render_scale=2\n"));
+        assert_eq!(ClientOptions { render_scale: 4, ..d }.to_text(), format!("{head}render_scale=4\n"));
+        assert_eq!(ClientOptions { hud: HudFilter::Sharp, ..d }.to_text(), format!("{head}hud=sharp\n"));
+        for k in [1, 2, 4] {
+            assert_eq!(ClientOptions::from_text(&format!("render_scale={k}")).render_scale, k);
         }
-        assert!(ClientOptions { voice: VoiceChat::PushToTalk, ..Default::default() }.to_text().contains("voice=ptt\n"));
-        for bad in ["voice=on", "voice=", "voice_volume=21", "voice_volume=x", "voice_demo=1"] {
-            let c = ClientOptions::from_text(bad);
-            assert_eq!((c.voice, c.voice_demo, c.voice_volume), (VoiceChat::Off, false, VOICE_VOLUME_GAME), "{bad}: the default");
+        let c = ClientOptions::from_text("render_scale=4\nhud=sharp\n");
+        assert_eq!((c.render_scale, c.hud), (4, HudFilter::Sharp));
+        assert_eq!(ClientOptions::from_text(&c.to_text()), c, "round trip");
+        let c = ClientOptions::from_text("hud=sharp");
+        assert_eq!((c.render_scale, c.hud), (1, HudFilter::Sharp), "HUD alone");
+        assert_eq!(ClientOptions::from_text("hud=nearest\nrender_scale=1"), d, "the earlier builds' hud=nearest: the default");
+        for bad in ["render_scale=3", "render_scale=8", "render_scale=0", "render_scale=x2", "hud=smooth", "hud="] {
+            assert_eq!(ClientOptions::from_text(bad), d, "{bad}: the defaults");
         }
     }
 
+    /// The options kept by the build with Textures' Crisp (gone the same day:
+    /// the user, "world textures cant render proper without smooth. so only
+    /// use for UI, Text") still load: the line is left out and written back
+    /// no more. The control: the lines beside it are read.
     #[test]
-    fn map_markers_kept_only_when_off() {
-        assert!(ClientOptions::default().map_markers, "on");
-        let off = ClientOptions { map_markers: false, ..Default::default() };
-        assert_eq!(off.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\nmap_markers=off\n");
-        assert!(!ClientOptions::from_text(&off.to_text()).map_markers, "the control: off read back off");
-        assert!(ClientOptions::from_text("map_markers=on").map_markers);
-        for bad in ["map_markers=0", "map_markers="] {
-            assert!(ClientOptions::from_text(bad).map_markers, "{bad}: on, the default");
+    fn options_with_textures_crisp_still_load() {
+        let c = ClientOptions::from_text("textures=crisp\nhud=sharp\nrender_scale=2\n");
+        assert_eq!((c.render_scale, c.hud), (2, render::ui::HudFilter::Sharp), "the lines beside it read");
+        let text = c.to_text();
+        assert!(!text.contains("textures"), "{text}");
+        assert!(text.contains("render_scale=2\n") && text.contains("hud=sharp\n"), "{text}");
+    }
+
+    /// The options kept by a build with voice chat (voice chat was only a
+    /// test, and is gone) still load: its lines are left out and written
+    /// back no more. The control: the lines beside them are read.
+    #[test]
+    fn options_with_the_voice_lines_still_load() {
+        let c = ClientOptions::from_text("voice=ptt\nvoice_demo=on\nvoice_volume=15\nflora=off\nloading=instant\n");
+        assert!(!c.flora && !c.loading_longer, "the lines beside them read");
+        let text = c.to_text();
+        assert!(!text.contains("voice"), "{text}");
+        assert!(text.contains("flora=off\n") && text.contains("loading=instant\n"), "{text}");
+    }
+
+    /// The options kept by a build with the map, the minimap, the Stats Box,
+    /// others' mana bars, Target of Target and the quests' marks and tracker
+    /// (all gone) still load: their lines are left out and written back no
+    /// more. The control: the lines beside them are read.
+    #[test]
+    fn options_with_the_lines_of_rows_gone_still_load() {
+        let old = "target_of_target=on\nmana_bars=off\nminimap=off\nstats_box=on\nquest_markers=off\nquest_tracker=off\nmap_markers=off\nmap_towns=off\nflora=off\nloading=instant\n";
+        let c = ClientOptions::from_text(old);
+        assert_eq!(c, ClientOptions { flora: false, loading_longer: false, ..Default::default() }, "the lines beside them read");
+        let text = c.to_text();
+        for gone in ["target_of_target", "mana_bars", "minimap", "stats_box", "quest_", "map_"] {
+            assert!(!text.contains(gone), "{gone}: {text}");
         }
-        // the town names the same way, apart from the markers
-        let towns = ClientOptions { map_towns: false, ..Default::default() };
-        assert_eq!(towns.to_text(), "lod=on\nbrightness=5\ncamera_distance=11\nmap_towns=off\n");
-        let back = ClientOptions::from_text(&towns.to_text());
-        assert!(!back.map_towns && back.map_markers, "off read back off, the markers kept on");
+        assert!(text.contains("flora=off\n") && text.contains("loading=instant\n"), "{text}");
     }
 
     /// Capture Controller is one setting for every window: another window's

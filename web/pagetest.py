@@ -38,20 +38,46 @@ version.json under it:
             that can't start in the kept folder opens without it; a report
             says what is remembered (the picker is a stand-in: the real one
             can't be driven headless)
+  typed     while the client says an edit box has the keys, a touch puts
+            the focus in the page's input (a phone's own keyboard comes up
+            with it), and what is typed there comes to the canvas as key
+            events, none of it kept; with none, a touch puts no keyboard up
   spellfx   the community page (spellfx.html): the server's spells (a
             stand-in answers <api>/spells), filtered by class and by a
             stand-in visual; a pick needs a spell and a visual; the pick is
             sent as the server takes it, a refusal said, the name kept for the
-            next visit; the game's page links it (the preview and the disc's
-            visuals are drive's: a visual list is handed over as the preview
-            sends it)
+            next visit; a cast lands by the spell (a harmful one at a second
+            human, never the dummy), or on the caster and a second human at
+            once, kept; W and S step through the visuals from the page and
+            from the preview, not while typing; the game's page links it (the
+            preview and the disc's visuals are drive's: a visual list is
+            handed over as the preview sends it)
+  fullscreen  Start puts the page full screen in its click where it can stay
+            so: a computer whose browser keeps Escape for the game (Keyboard
+            Lock), Escape locked; a touch device, where a touch on the game
+            puts it back once it is left, not while an edit box has the
+            keyboard (the touch puts that up). Not without Keyboard Lock (a
+            stand-in), not with another window of the game open, not on an
+            iPhone; a computer's left stays left at a click
+  install   the page names its build's manifest, Chromium finds nothing in
+            the way of installing it (a page without one: errors), the icons
+            are PNGs in the build; the card's button (a stand-in offer) asks
+            the browser's prompt, and says what came of it, a report too; a
+            browser that has not offered it: nothing on a computer, its menu
+            on a phone (Firefox's named), the Home Screen on an iPhone; none
+            of it started as the app
+  software  a browser drawing without the graphics card (a stand-in: no
+            WebGPU, WebGL2 naming Windows' Microsoft Basic Render Driver; then
+            the client's graphics line naming it) is told so on the card's
+            line, in a notice (once) and on the status line in the world; a
+            graphics card is not
 
 Each check has its negative control. Needs the `websockets` package.
 
     web/build.sh && web/pagetest.py --iso run/eqoa.iso
     web/pagetest.py --serve --http-port 8794   # the site alone, for drive.py --base
 """
-import argparse, asyncio, functools, http.server, json, os, shutil, socketserver, subprocess, sys, tempfile, threading, time, urllib.request
+import argparse, asyncio, functools, http.server, json, os, re, shutil, socketserver, subprocess, sys, tempfile, threading, time, urllib.request
 from pathlib import Path
 
 import websockets
@@ -289,6 +315,19 @@ async def tests(a, site, base, page):
     # ---- update
     first = site.first
     check("the page is its build", await page.open(base + q) == first, str(await page.js("window.eqoaBuild")))
+
+    # ---- iOS: its pickers grey a disc image out under the inputs' accept
+    # (every browser there is WebKit), so the page drops it there (main.js
+    # `onIOS`); the control, a desktop page keeps it
+    accepts = "document.getElementById('iso').accept + '|' + document.getElementById('iso2002').accept"
+    check("a desktop page's disc inputs keep their filter (control)", await page.js(accepts) == ".iso,.bin,.img|.iso,.bin,.img")
+    ua = await page.js("navigator.userAgent")
+    await page.call("Emulation.setUserAgentOverride", userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/131.0.6778.73 Mobile/15E148 Safari/604.1")
+    await page.open(base + q)
+    check("on an iPhone they take any file", await page.js(accepts) == "|", str(await page.js(accepts)))
+    await page.call("Emulation.setUserAgentOverride", userAgent=ua)
+    await page.open(base + q)
+    check("and back on the desktop, filtered again", await page.js(accepts) == ".iso,.bin,.img|.iso,.bin,.img")
     await page.stay()
     latest = await page.js("eqoaCheckUpdate()")
     await asyncio.sleep(0.5)
@@ -703,11 +742,45 @@ async def tests(a, site, base, page):
     check("a spell alone is no pick yet (control)", await page.js(sendable) is False and "Test Tap" in (await page.js("document.getElementById('pick-spell').textContent") or ""))
     # the visual list as the preview sends it when it has read the disc
     await page.until("(() => { const w = document.getElementById('preview').contentWindow; return w.location.pathname.endsWith('fxview.html') && w.document.readyState === 'complete'; })()", 10)
+    # what the page asks the preview to play, as the preview's frame gets it
+    await page.js("(() => { const w = document.getElementById('preview').contentWindow; w.__asked = []; w.addEventListener('message', (e) => { if (e.data && e.data.type === 'fxview-play') w.__asked.push(e.data.effect + ' ' + e.data.aim); }); return true; })()")
+    asked = "document.getElementById('preview').contentWindow.__asked.join()"
     await page.js("document.getElementById('preview').contentWindow.eval(\"parent.postMessage({source: 'eqoa-fxview', type: 'started', visuals: ['0x11111111', '0x55555555']}, location.origin)\")")
     listed = await page.until("document.querySelectorAll('#visuals li[data-visual]').length === 2 && [...document.querySelectorAll('#visuals li[data-visual]')].map((l) => l.dataset.visual).join()", 5)
     check("the visuals the preview read are listed", listed == "0x11111111,0x55555555", str(listed))
     given = await page.js("document.querySelector('#visuals li[data-visual=\"0x11111111\"]').textContent")
     check("a visual says which spell has it", "Test Bolt" in (given or ""), str(given))
+    # what a cast lands on: by the spell a harmful one at a second human, never
+    # the dummy (the user: its hitbox makes the visual smaller), the caster and a
+    # second human at once when asked, and that kept
+    played = await page.until(asked, 5)
+    check("a harmful spell lands on a second human by itself", played == "0x44444444 human", str(played))
+    offered = await page.js("[...document.getElementById('aim').options].map((o) => o.value).join()")
+    check("the training dummy is not offered", offered == "auto,both,human,caster", str(offered))
+    await page.js("document.querySelector('#spells li[data-id=\"3\"] button').click(); true")
+    played = await page.until(f"{asked}.endsWith('0x33333333 caster') && {asked}", 5)
+    check("a beneficial one at the caster (control)", bool(played), str(await page.js(asked)))
+    await page.js("(() => { const a = document.getElementById('aim'); a.value = 'both'; a.dispatchEvent(new Event('change')); return true; })()")
+    played = await page.until(f"{asked}.endsWith('0x33333333 both') && {asked}", 5)
+    check("the caster and a second human at once, kept", bool(played) and await page.js("localStorage.getItem('eqoa.spellfxAim')") == "both", str(await page.js(asked)))
+    await page.js("document.querySelector('#spells li[data-id=\"4\"] button').click(); true")
+    # W and S: the visual before and after, wherever the page's keys are, the preview's too
+    visual = "eqoaSpellfx.visual"
+    await page.js("document.activeElement && document.activeElement.blur(); true")
+    await page.key("s", "KeyS", 83)
+    check("S steps to the next visual", await page.until(f"{visual} === '0x11111111'", 3) is True, str(await page.js(visual)))
+    await page.js("document.getElementById('spell-search').focus(); true")
+    # a key that types: its text with it, as a keyboard's
+    await page.call("Input.dispatchKeyEvent", type="keyDown", key="s", code="KeyS", windowsVirtualKeyCode=83, text="s")
+    await page.call("Input.dispatchKeyEvent", type="keyUp", key="s", code="KeyS", windowsVirtualKeyCode=83)
+    await asyncio.sleep(0.3)
+    typed = await page.js(f"{visual} + ' ' + document.getElementById('spell-search').value")
+    check("not while a box takes typing (control)", typed == "0x11111111 s", str(typed))
+    await page.js("(() => { const s = document.getElementById('spell-search'); s.value = ''; s.dispatchEvent(new Event('input')); s.blur(); return true; })()")
+    await page.until(f"{ids} === '[2,3,4]'", 3)
+    await page.js("(() => { const f = document.getElementById('preview'); f.focus(); f.contentDocument.getElementById('eqoa').focus(); return true; })()")
+    await page.key("w", "KeyW", 87)
+    check("W in the preview steps back", await page.until(f"{visual} === '0x55555555'", 3) is True, str(await page.js(visual)))
     await page.js("document.querySelector('#visuals li[data-visual=\"0x55555555\"] button').click(); true")
     check("a spell and a visual make a pick", await page.js(sendable) is True and "Test Tap" in (await page.js("document.getElementById('send').textContent") or ""))
     await page.js("document.getElementById('who').value = 'Tester'; document.getElementById('note').value = 'it rang'; document.getElementById('send').click(); true")
@@ -730,9 +803,11 @@ async def tests(a, site, base, page):
     check("a refusal is said, not thanked", "Too many picks" in (refused or "") and len(site.picks) == 3, str(refused))
     await open_fx()
     check("the name is kept for the next visit", await page.js("document.getElementById('who').value") == "flood")
-    await page.js("localStorage.removeItem('eqoa.spellfxName'); true")
+    check("so is what a cast lands on", await page.js("document.getElementById('aim').value") == "both")
+    await page.js("localStorage.removeItem('eqoa.spellfxName'); localStorage.removeItem('eqoa.spellfxAim'); true")
     await open_fx()
     check("none kept, the field is empty (control)", await page.js("document.getElementById('who').value") == "")
+    check("and a cast lands by the spell (control)", await page.js("document.getElementById('aim').value") == "auto")
     # a spell GMs give its visual while the page is open leaves the list at the next refresh
     await page.until(f"{ids} === '[2,3,4]'", 5)
     SPELLFX_SPELLS[1]["standin"] = False  # Test Heal (id 2) has its visual now
@@ -748,6 +823,217 @@ async def tests(a, site, base, page):
     build = json.loads((HERE / "dist" / "version.json").read_text())["build"]
     icons = [p for p in ("index", "fxview", "spellfx") if f'href="./v/{build}/disc.svg"' in (HERE / "dist" / f"{p}.html").read_text()]
     check("every page carries the program's icon, in its build", icons == ["index", "fxview", "spellfx"] and (HERE / "dist" / "v" / build / "disc.svg").is_file(), str(icons))
+
+    # ---- typed: a phone's or a tablet's own keyboard for the game's edit
+    # boxes, the client stood in for by eqoaWantText (main.js)
+    await page.open(base + q)
+    await page.js("window.__keys = []; document.getElementById('eqoa').addEventListener('keydown', (e) => window.__keys.push(e.key)); true")
+    touch_up = "document.getElementById('eqoa').dispatchEvent(new PointerEvent('pointerup', {pointerType: 'touch', bubbles: true})); document.activeElement && document.activeElement.id"
+    check("no edit box: a touch puts no keyboard up (control)", await page.js(touch_up) != "eqoatyped")
+    await page.js("window.eqoaWantText(true); true")
+    check("an edit box: a touch puts the focus in the page's input, its keyboard with it", await page.js(touch_up) == "eqoatyped")
+    for ch in "Ab 1":
+        await page.call("Input.insertText", text=ch)
+    await page.key("Backspace", "Backspace", 8)
+    await page.key("Enter", "Enter", 13)
+    keys = await page.js("JSON.stringify(window.__keys)")
+    check("what is typed there comes to the canvas as its keys", json.loads(keys or "null") == ["A", "b", " ", "1", "Backspace", "Enter"], str(keys))
+    check("and none of it stays in the input", await page.js("document.getElementById('eqoatyped').value.trim()") == "")
+    await page.js("window.eqoaWantText(false); true")
+    check("the box gone, the focus is the canvas's again", await page.js("document.activeElement && document.activeElement.id") == "eqoa")
+    check("and a touch puts no keyboard up any more", await page.js(touch_up) != "eqoatyped")
+
+    # ---- fullscreen: Start puts the page full screen in its own click on a
+    # computer whose browser keeps Escape for the page (Keyboard Lock) and on
+    # a touch device (CDP's touch emulation: its pointer coarse), where a touch
+    # on the game puts it back once it is left, but not while an edit box has
+    # the keyboard; not where Escape would end it (no Keyboard Lock: a
+    # stand-in), not with another window of the game open (multiboxing), not
+    # on an iPhone. F11 stays the browser's: Chromium takes it before the page
+    # in any full screen (checked headed, through X: README "In a browser").
+    fs = "!!document.fullscreenElement"
+    fsfact = "(eqoaReport.facts().find((l) => l.startsWith('full screen:')) || '')"
+    # the browser's own install offer kept from the page, so the card shows
+    # what these checks put there (a stand-in offer is not trusted)
+    quiet = await page.call("Page.addScriptToEvaluateOnNewDocument", source="addEventListener('beforeinstallprompt', (e) => { if (e.isTrusted) e.stopImmediatePropagation(); }, true);")
+
+    async def start():
+        """Start pressed in a click's activation, the disc picked: whether the
+        page went full screen."""
+        await page.open(base + q)
+        await page.pick(a.iso)
+        await page.gesture("document.getElementById('go').click(); true")
+        return bool(await page.until(fs, 3))
+
+    async def tap():
+        await page.call("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": 300, "y": 300, "id": 1}])
+        await page.call("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+
+    async def leave():
+        await page.js("document.exitFullscreen().then(() => true, () => true)")
+        return bool(await page.until(f"!{fs}", 3))
+
+    check("a computer whose browser keeps Escape for the page: Start goes full screen", await start())
+    said = await page.until(f"{fsfact}.includes('Escape the game')", 3)
+    check("Escape locked to the game there", bool(said), str(await page.js(fsfact)))
+    nolock = await page.call("Page.addScriptToEvaluateOnNewDocument", source="Object.defineProperty(Navigator.prototype, 'keyboard', { configurable: true, get: () => undefined });")
+    try:
+        check("one whose browser can't (Firefox, Safari: a stand-in): no full screen (control)", not await start())
+    finally:
+        await page.call("Page.removeScriptToEvaluateOnNewDocument", identifier=nolock["identifier"])
+    await page.open(base + q)
+    other = devtools("new?" + base, "PUT")
+    try:
+        devtools(f"activate/{a.target_id}")
+        both = await page.until("eqoaWindows.live.length === 2 && document.visibilityState === 'visible'", 5)
+        await page.pick(a.iso)
+        await page.gesture("document.getElementById('go').click(); true")
+        went = await page.until(fs, 2)
+        check("another window of the game open (multiboxing): no full screen", bool(both) and not went, f"{both} {await page.js(fsfact)}")
+    finally:
+        devtools(f"close/{other['id']}")
+        devtools(f"activate/{a.target_id}")
+    await page.call("Emulation.setUserAgentOverride", userAgent="Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1")
+    try:
+        check("an iPhone: none (iOS lets no page there)", not await start())
+        what = await page.js("document.getElementById('install').hidden ? '' : document.getElementById('install-what').textContent")
+        check("its card says how: the Home Screen app", "Add to Home Screen" in (what or ""), str(what))
+    finally:
+        await page.call("Emulation.setUserAgentOverride", userAgent=ua)
+
+    await page.call("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=5)
+    try:
+        check("a touch device: Start goes full screen", await start())
+        playing = await page.until("document.body.classList.contains('playing')", 60)
+        left = await leave()
+        await tap()
+        check("left, a touch on the game puts it back", bool(playing) and left and bool(await page.until(fs, 3)), f"playing {playing}, left {left}")
+        await page.js("eqoaWantText(true); true")
+        await leave()
+        await tap()
+        await asyncio.sleep(0.5)
+        check("not while an edit box has the keyboard (control): the touch puts it up", not await page.js(fs) and await page.js("document.activeElement && document.activeElement.id") == "eqoatyped")
+        await page.js("eqoaWantText(false); true")
+    finally:
+        await page.call("Emulation.setTouchEmulationEnabled", enabled=False)
+    check("a computer: Start goes full screen", await start())
+    playing = await page.until("document.body.classList.contains('playing')", 60)
+    await leave()
+    await page.call("Input.dispatchMouseEvent", type="mousePressed", x=300, y=300, button="left", clickCount=1)
+    await page.call("Input.dispatchMouseEvent", type="mouseReleased", x=300, y=300, button="left", clickCount=1)
+    await asyncio.sleep(0.5)
+    check("left, it stays left at a click on the game (control: a computer's is the player's)", bool(playing) and not await page.js(fs))
+
+    # ---- install: the build is an app a browser can install (its manifest,
+    # the drawn disc's icons); the card's button asks a Chromium-based
+    # browser's own prompt (a stand-in offer: the real one comes when the
+    # browser's rules say), elsewhere the card says which menu has it, and
+    # started as the app it says nothing
+    await page.open(base + q)
+    man = await page.call("Page.getAppManifest") or {}
+    parsed = json.loads(man.get("data") or "{}")
+    check("the page names its build's manifest, which parses", re.search(r"/v/[0-9a-f]{12}/manifest\.json$", man.get("url", "")) is not None and not man.get("errors") and parsed.get("display") == "fullscreen",
+          json.dumps(man.get("errors")) + " " + man.get("url", ""))
+    installable = ((await page.call("Page.getInstallabilityErrors")) or {}).get("installabilityErrors")
+    check("Chromium can install it: no installability error", installable == [], json.dumps(installable))
+    await page.call("Page.navigate", url=base + "spellfx.html")
+    await page.until("document.readyState === 'complete'", 10)
+    bare = ((await page.call("Page.getInstallabilityErrors")) or {}).get("installabilityErrors")
+    check("a page with no manifest can't be (control)", bool(bare), json.dumps(bare))
+    build = json.loads((HERE / "dist" / "version.json").read_text())["build"]
+    made = [i for i in ("icon-192.png", "icon-512.png", "icon-maskable-512.png", "apple-touch-icon.png") if (HERE / "dist" / "v" / build / i).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"]
+    check("its icons are in the build, PNGs", len(made) == 4 and f'href="./v/{build}/apple-touch-icon.png"' in (HERE / "dist" / "index.html").read_text(), str(made))
+
+    card = "JSON.stringify([!document.getElementById('install').hidden, !document.getElementById('install-go').hidden, document.getElementById('install-what').textContent])"
+    offer = """(() => { const e = new Event('beforeinstallprompt');
+      e.prompt = () => { window.__prompted = (window.__prompted || 0) + 1; return Promise.resolve(); };
+      e.userChoice = Promise.resolve({ outcome: %s }); dispatchEvent(e); return true; })()"""
+    appfact = "(eqoaReport.facts().find((l) => l.startsWith('app:')) || '')"
+    await page.open(base + q)
+    shown = json.loads(await page.js(card))
+    check("a computer's browser that has not offered it: nothing on the card (control)", shown[:2] == [False, False], str(shown))
+    await page.js(offer % "'accepted'")
+    shown = json.loads(await page.js(card))
+    check("one that offers it: the button", shown[:2] == [True, True] and "full screen" in shown[2], str(shown))
+    await page.gesture("document.getElementById('install-go').click(); true")
+    said = await page.until(f"{card}.includes('Installed:')", 3)
+    check("pressed, the browser's own prompt; accepted, the card says so and the button goes", await page.js("window.__prompted") == 1 and bool(said) and not json.loads(await page.js(card))[1], str(await page.js(card)))
+    check("and a report says so", await page.js(appfact) == "app: accepted", str(await page.js(appfact)))
+    await page.open(base + q)
+    await page.js(offer % "'dismissed'")
+    await page.gesture("document.getElementById('install-go').click(); true")
+    await asyncio.sleep(0.3)
+    shown = json.loads(await page.js(card))
+    check("dismissed, the button goes (on a computer the card says nothing more)", shown[:2] == [False, False], str(shown))
+    await page.call("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=5)
+    try:
+        await page.open(base + q)
+        shown = json.loads(await page.js(card))
+        check("a phone's browser that has not offered it: its menu", shown[:2] == [True, False] and "Install app or Add to Home screen" in shown[2], str(shown))
+        await page.call("Emulation.setUserAgentOverride", userAgent="Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0")
+        await page.open(base + q)
+        shown = json.loads(await page.js(card))
+        check("Firefox on a phone: Firefox's menu", shown[:2] == [True, False] and "Firefox" in shown[2], str(shown))
+    finally:
+        await page.call("Emulation.setUserAgentOverride", userAgent=ua)
+        await page.call("Emulation.setTouchEmulationEnabled", enabled=False)
+    standalone = await page.call("Page.addScriptToEvaluateOnNewDocument", source="Object.defineProperty(Navigator.prototype, 'standalone', { configurable: true, get: () => true });")
+    try:
+        await page.open(base + q)
+        await page.js(offer % "'accepted'")
+        shown = json.loads(await page.js(card))
+        check("started as the installed app: nothing on the card, offered or not", not shown[0] and await page.js(appfact) == "app: started as the installed app", f"{shown} {await page.js(appfact)}")
+    finally:
+        await page.call("Page.removeScriptToEvaluateOnNewDocument", identifier=standalone["identifier"])
+    await page.call("Page.removeScriptToEvaluateOnNewDocument", identifier=quiet["identifier"])
+
+    # ---- software: a browser drawing without the graphics card is told so
+    # once, on the card's line, in a notice and on the status line in the
+    # world (F3 20261027-003944: Windows' Microsoft Basic Render Driver,
+    # which the card's check missed). Stand-ins, before the page loads: no
+    # WebGPU and a renderer's name from WebGL2; then the client's own
+    # graphics line as that player's client sent it.
+    warp = "ANGLE (Microsoft, Microsoft Basic Render Driver (0x0000008C) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    card = "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 (0x00002504) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    gfx = "document.getElementById('gfx-state').textContent"
+    soft = f"{notices}.includes('software-graphics')"
+    told = "(document.querySelector('#notices .notice[data-key=software-graphics] .text') || {}).textContent || ''"
+    status = "document.getElementById('status').textContent"
+
+    async def probed(renderer):
+        """The page opened on a stand-in renderer: the card's line once its
+        check is done."""
+        stub = await page.call("Page.addScriptToEvaluateOnNewDocument", source=f"""
+            Object.defineProperty(Navigator.prototype, 'gpu', {{ configurable: true, get: () => undefined }});
+            const get = WebGL2RenderingContext.prototype.getParameter;
+            WebGL2RenderingContext.prototype.getParameter = function (p) {{
+              return p === 0x9246 || p === 0x1F01 ? {json.dumps(renderer)} : get.call(this, p);
+            }};""")
+        try:
+            await page.open(base + q)
+            return await page.until(f"!{gfx}.startsWith('Checking') && {gfx}", 10) or ""
+        finally:
+            await page.call("Page.removeScriptToEvaluateOnNewDocument", identifier=stub["identifier"])
+
+    line = await probed(warp)
+    check("the page's probe on Basic Render Driver: the card says so", line.startswith("Graphics: WebGL2, drawn without the graphics card"), line)
+    text = await page.until(told, 5) or ""
+    check("and a notice says what to do", "without the graphics card" in text and "Use graphics acceleration when available" in text and "driver" in text, text)
+    help_ = await page.js("document.getElementById('gfx-help').textContent") or ""
+    check("the card's steps are acceleration's", "chrome://settings/system" in help_ and "chrome://flags" not in help_, help_)
+    line = await probed(card)
+    check("on a graphics card: WebGL2's line, no notice (control)", line.startswith("Graphics: WebGL2. It works") and not await page.js(soft), line)
+    await page.js(f"document.body.classList.add('playing'); eqoaStatus({json.dumps('graphics: ' + card + ' (Gl)')}); eqoaStatus('booted · 60 fps · 300 MB'); true")
+    check("nor from the client's adapter on one (control)", not await page.js(soft) and await page.js(status) == "booted · 60 fps · 300 MB", str(await page.js(status)))
+    await page.js(f"eqoaStatus({json.dumps('graphics: ' + warp + ' (Gl)')}); eqoaStatus('booted · 27 fps · 300 MB'); true")
+    check("the client's adapter on Basic Render Driver: the notice", bool(await page.until(soft, 5)))
+    check("the card's line (the report's graphics fact) says so", (await page.js(gfx) or "").startswith("Graphics: WebGL2, drawn without the graphics card"), str(await page.js(gfx)))
+    check("and the status line in the world", await page.js(status) == "booted · 27 fps · 300 MB · drawn without the graphics card", str(await page.js(status)))
+    await page.js("[...document.querySelectorAll('#notices .notice[data-key=software-graphics] button')].find(b => b.textContent === 'Dismiss').click()")
+    await page.js(f"eqoaStatus({json.dumps('graphics: ' + warp + ' (Gl)')}); eqoaStatus('booted · 27 fps · 300 MB'); true")
+    await asyncio.sleep(0.3)
+    check("dismissed, it is not raised again", not await page.js(soft) and "drawn without" in (await page.js(status) or ""))
+    await page.js("document.body.classList.remove('playing'); true")
 
     errors = [l for l in page.lines if l.startswith("EXCEPTION") and "crash_test" not in l and "unreachable" not in l and "a test rejection" not in l]
     check("no exception in the page beyond the crash test's", not errors, "; ".join(errors[:3]))

@@ -5,6 +5,465 @@ in the same push as the changes it describes. The dev release's page shows them
 (`release/notes.sh`, from `.github/workflows/dev.yml`); an edit to this file alone
 is put on the page by `.github/workflows/notes.yml`.
 
+## 2026-10-30 · Spell effects' missing shapes
+- Some spell effects carry moving shapes as well as sparkles, and those were never drawn. The
+  warrior's Furious, Frenzied and Desperate Defense now raise their column of yellow-green flame
+  round the warrior, and another effect its two green glowing forms sweeping round the caster, as
+  on a PlayStation 2.
+
+## 2026-10-30 · Spell lightning lit like the world
+- The lightning of spells (a wizard's or a druid's bolt and the like) is lit by the day, the night
+  and your lantern as the PlayStation 2 lights it: in daylight a blue or green bolt comes out paler
+  and brighter, at night it keeps more of its own colour. It had been drawn in its bare colour at
+  every hour. The trails of weapons stay as they were: the game draws them unlit.
+
+## 2026-10-30 · Glowing weapons and spell effects as bright as on a PS2
+- Every particle was drawn at half the strength the PlayStation 2 draws it with: the glow round an
+  epic or magic weapon such as the Sword of Virtue, the sparkles, clouds and flashes of every spell,
+  the fires, smoke and sparkles placed in the world, rain and snow, the stars, and the lightning of
+  spells and the trails of weapons. They now light up as much as on a console: a glowing blade
+  glows again.
+- How it was found: the same character with the Sword of Virtue in hand and Minor Healing cast on
+  it, side by side with the decompiled game's own drawing. The glow came out at about two thirds of
+  the game's, and now matches it; the world's models, the sky's dome, water and the HUD are drawn
+  as before.
+
+## 2026-10-30 · SOE's final patch features, recovered from the Corsten and Lostologist save states!
+- The game kept changing after the Frontiers disc, and its final client went with SOE's servers: no
+  disc ever had it. Two save states made in the live game, Corsten's and Lostologist's, still held it
+  in the console's memory, and the features below were read out of it and rebuilt, as they worked
+  when the servers closed. They need a server that runs them (eqoaclassic does); on Sandstorm and
+  other servers nothing changes, except for the lines that say "on every server".
+- **How close is it to SOE's?** Everything you see is SOE's own: each window's layout, text, keys and
+  rules, and every message the client sends and reads, were read instruction by instruction out of
+  that final client and made to do the same. (The rest of this client is checked bit for bit
+  against the decompiled Frontiers disc; the final client has no decompilation, so these were read
+  straight from its machine code.) What SOE's servers did with those messages went with the
+  servers: where the client does not say, eqoaclassic does what we chose to fit what the client
+  expects. That covers who a group search finds, how a stack's items are shared among several
+  bidders, the words a reset says, and duel hits on players being halved.
+- **Duels.** The start menu's Community has a Duel entry: Duel > Invite challenges your target, Duel >
+  Surrender gives up the duel you are in. Quitting during a duel gives it up too.
+- A challenge opens the game's own duel window: who challenges you, their guild, race, class and
+  level, with ✕ to accept and △ to decline (Enter or E, and Escape, on the keyboard). It counts its
+  last ten seconds down; an invitation that comes while another window is up waits until you are
+  back in play.
+- Accepted, both of you get the wager window, the trade window's twin: put tunar on the duel with
+  ✕ on the Tunar box (no more than you carry), □ (Q) to accept, △ to take an accept back or to call
+  the duel off, Space for a chat line. When both accept the duel begins, and the winner takes both
+  stakes. Only tunar can be wagered: an item put in is refused with a line.
+- In a duel you can attack your opponent and their pet as you would a creature, and Tab and R1
+  cycle to their pet. An orange mark on the compass points to where the duel began.
+- **Looking for a group.** The Group menu has Search, Register and Unregister. Register (or typing
+  `/lfg on`) puts you on the list of players looking for a group, Unregister (`/lfg off`) takes you
+  off it. Search opens the game's window for it: pick any races and classes and a level range (type
+  -1 for the levels you could hunt with), Search, and the players found are listed with their race,
+  class and level, sorted by any column with R1 or Tab and L1. ✕ on a player invites them to your
+  group or sends them a tell; □ shows the window's help. A group's leader looks for players to fill
+  it, a player alone for a group.
+- **Auctions of stacks.** You can put up a whole stack, or part of one: the form asks how many, and
+  the prices are each item's. Bidding asks how many you want, "Buy all now" buys the whole stack at
+  its price each, and the bidders' list shows how many each one asked for. Items with Lore can be put
+  up too. The Ogre and the Alchemist show in the auction's pickers and in an item's races and
+  classes only when the server has them.
+- **Mail to several players.** A letter can go to several players at once: write their names in To
+  with commas or semicolons between them. If a name is nobody's, the letter is not sent and the box
+  names who was not found, so you can put it right. If someone's mailbox is full, or they have too
+  many unread letters from you, the chat says so in red, naming them, and everyone else gets it.
+- A letter you read shows who it went to, under From, and its options have Reply All between Reply
+  and Delete: it answers the sender and everyone else it went to.
+- **Dyed armour.** Armour, robes and helms can be any colour, sent the way the game did it at its
+  end (on eqoaclassic a game master sets them). Each dyed piece is drawn in its colour on your
+  character, on everyone near you and on the character select screen. Armour that is not dyed looks
+  exactly as before.
+- **On every server, Sandstorm included:** buying a second Master Class while you have one is
+  refused at once, with "You cannot possess more than one Master Class at a time." in red, where it
+  used to only warn and then let you ask the server anyway.
+- On every server: destroying an item asks 'Destroy item "<its name>"?', so you can see which one
+  you picked, and selling one to a merchant asks 'Sell item "<its name>"?' for everything but loot.
+  Both start on No.
+- On every server: a petition the staff have closed no longer says only "System is temporarily
+  unavailable. (Code: -8)": the game's explanation follows, that the petition may have been
+  addressed (the box has room for its start, as the game's had). In your inbox, up from the first
+  letter goes round to the last, and down from the last to the first. The Group menu's Show Chat
+  and Hide Chat now tell the server (they did nothing).
+- For GMs, on every server: the game's /rst_mastr, /rst_both, /rem_abil, /banktunar and /servdown
+  are typed in the chat, and work while the server has your GM commands on.
+- **Also in this build:** your own character is now drawn at the size the server gives it, as
+  everyone else is: on eqoaclassic a gnome is a little smaller than before (9 tenths). How you walk
+  and what you bump into are as before.
+
+## 2026-10-29 · The who list in CM order on Sandstorm, as on a PS2
+- On Sandstorm the who list now shows players in the server's own order, highest combat masteries
+  first, whenever you open it again or press Update and nobody has come or gone since: Sandstorm's
+  patch keeps the server's order then, as it does on a PS2. The first time you open it, and after
+  L1 or R1 (left or right), it is sorted by the column as before.
+
+## 2026-10-29 · One question for all your crash reports, and freezes written down
+- If the game stopped more than once since you last sent its crash reports, the next start now
+  asks about all of them at once and says how many there are. Send sends them all, Delete deletes
+  them all, and Not now keeps them for later. Until now it asked about one at a time, the newest,
+  so the same question came back at every start.
+- The music is now read from the disc ahead of playing it, as the browser version does. A slow
+  disc (a drive waking up, or a busy one) now only makes the music start a little late, where it
+  could hold the whole game up for as long as the read took.
+- When the game freezes for a second or more, it now writes down how long, and what it was doing,
+  in its log. A problem report (F3) sent afterwards carries that, and when you play two windows it
+  carries the other window's too, so a report of freezes says what held them up.
+
+## 2026-10-29 · Space loots a corpse as well as opening it
+- In a corpse's window Space now does what the controller's ✕ does there, the button that opened
+  it: on LEAVE ALL it closes the window, on an item it takes that item, and on TAKE ALL it takes
+  everything. It used to do nothing there, so you had to switch to E or Enter.
+
+## 2026-10-29 · A steady camera while you strafe with the mouse held
+- Running while holding a mouse button (the right one, or the left one while you move) and
+  stepping sideways with A or D no longer makes the camera shake from side to side, which blurred
+  the picture at a high frame rate. It now follows you as smoothly as with the keys alone.
+- The same goes for dragging the camera round with a finger on a touch screen while you run.
+
+## 2026-10-29 · Playing over a phone's hotspot
+- The game connects on networks that give servers IPv6 addresses, as many phone hotspots do: it
+  now takes a server's IPv4 address when there is one, and on a network with IPv6 alone it goes
+  through the network's own way to IPv4. Before, the server list stopped there with "An address
+  incompatible with the requested protocol was used".
+
+## 2026-10-29 · Longer passwords at the login
+- The Station login, the new-account page and the change-password page now take a password of up
+  to 31 characters, the most the login can send. They stopped at 15, so a longer password made on
+  a server's website could not be typed in.
+
+## 2026-10-29 · A trade no longer opens over your inventory
+- When the other player accepts your trade while you have your inventory (or any other part of the
+  Start menu) open, the menu now closes and the trade window opens on its own, as on the PS2. Both
+  used to stay up, taking your button presses, so an item you picked could look as if it had been
+  copied.
+- Opening the Start menu after that shows the main menu, not the inventory it was closed over.
+
+## 2026-10-29 · The aiming crosshair reaches no farther than a tap
+- Holding R1 or L1 (Tab or ` on the keyboard) to aim with the crosshair now targets only what a
+  tap of the same button could: creatures within 200 of the camera. It used to take whatever lay
+  nearest the crosshair however far off, even creatures too far away to be drawn, and with a long
+  NPC/PC View Distance out to 1,000.
+
+## 2026-10-29 · A creature's second body
+- A server can send a creature or a player with a second body to show in place of its own (the
+  live game did, for its upgraded models). This client now shows that body, and bumps into it,
+  as the PS2 does: until now it always showed the first one.
+
+## 2026-10-29 · Invisible walls stop you again
+- An invisible wall that the server puts up as a creature now stops you, as on the PS2.
+  Sandstorm uses them to keep players out of a place until a quest lets them through, and this
+  client let you walk straight through them: it made a creature solid only once it had a body
+  to draw, and these have none.
+
+## 2026-10-28 · No stand-in when you enter the world
+- When you enter the world or change worlds, a human man no longer stands in for your character
+  for a moment before your own appears: the game draws you once the server has described you, as
+  the PS2 does.
+
+## 2026-10-28 · Steering with the mouse runs as the stick does; coaches with the menu open
+- Steering with the mouse (the right button held, or either button in first person) keeps your
+  run as it is with the keys or a controller again. Since yesterday's update, a mouse that moved
+  held your speed at what it was when the mouse began to move: from a stand you only crept
+  forward until the mouse stopped, a run you let go of slid on, and on slopes your character sank
+  into the ground going up and floated over it going down.
+- A coach, a boat or a port that moves you while the start menu or the inventory is open now
+  closes it first and gives you your own camera back, as on the PS2. The camera had stayed in the
+  menu's close-up of your character, and after opening and closing the menu again it sat at one
+  angle round you instead of following behind you. Dying with the menu open is fixed the same way.
+- Problem reports (F3) now say how the connection to the server is doing, so a report from a
+  world where no one else shows up tells whether the server still hears you.
+
+## 2026-10-28 · GMs see their server's names for the TRIGGER entries
+- For GMs only, on a server that names its triggers (eqoaclassic): TEST, Programming, TRIGGER
+  now shows each trigger's name where the PS2 shows eight lines all called TRIGGER. A trigger
+  that is switched off is greyed out, and one that is going on now has a * after its name. A
+  line with no trigger still says TRIGGER. Picking a line fires it as before. Every other
+  player, and every other server, sees no change.
+
+## 2026-10-28 · Goto Zone lands on the ground; fishing on eqoaclassic
+- The GM's Goto Zone (TEST, Navigation) now sets you down on the ground of the square you pick,
+  as the PS2 does. It left you under the ground there, and you fell.
+- Fishing now works on eqoaclassic: buy a Fishing Pole from a Pole Merchant and a can of worms
+  from the Tacklemaster beside him (Freeport's docks, the Oasis, Hazinak and more), wear both,
+  face the water and say /fish (or use a weapon set that holds the pole).
+
+## 2026-10-28 · Shadows under the characters, fishing, and the GM's TEST menu
+- Every character near the camera now has a shadow under its feet, as on the PS2: a soft dark
+  patch on the ground, and on docks, counters and steps, fading where the ground falls away.
+  Inside a building, as on the PS2, only the characters you could see through its doorways
+  and openings cast one. Options, Extended, World, Shadows turns them off.
+- Spell lightning and weapon trails are drawn over the spells' sparks and the shadows, and
+  under the rain and snow, in the PS2's order (they were drawn under the sparks).
+- Fishing works as on the PS2 on a server that offers it (none of ours does yet): the Fishing
+  window, its power meter (✕ or the left stick to cast and throw), the catch list (Take All,
+  one item, Leave All), its messages, and the splash on the water.
+- On a server that gives your account the game's GM channel, the start menu shows TEST first,
+  as a GM's PS2 did, with its Buff PC and Goto windows. Every other player sees no change.
+- A full buddy list on the other side now says so ("Add buddy failed: Your buddy's buddy list
+  is full."), and the game answers the server's connection check and its other housekeeping
+  as a PS2 does. Your position goes to the server at the PS2's own rate (every 101.7 ms; it
+  was 100).
+
+## 2026-10-28 · You can run again after casting a spell
+- Since about 00:55 UTC this morning, casting a spell left you walking, unable to run, until
+  you logged in again: you walk while you cast, and the game thought the cast never ended. The
+  clock change below already cured it; the cast's timing is now kept the way the PS2 keeps it,
+  so no clock can bring it back.
+- Dying now ends the slowed walk of a spell you were casting, as on the PS2.
+
+## 2026-10-28 · The game's clock can no longer run out mid-session
+- The game's network clock now starts from a small number each time you log in, so it can
+  never reach the size that stopped the loading screen this morning, and it no longer runs
+  out on November 21 (it would have frozen the loading screen, the alarm and some windows'
+  timing for anyone playing at that moment, until they logged in again). Nothing changes in
+  how the game plays.
+
+## 2026-10-28 · Entering the world no longer closes the game
+- Since about 00:55 UTC on October 28 the game closed itself as you entered the world, on
+  every server, at the loading screen. Its turning gears were timed by a clock that counts
+  milliseconds from the computer's date, and that count passed a size the gears' animation
+  could not hold. The gears now keep a clock of their own, and no animation can step outside
+  its frames any more, whatever its clock says.
+
+## 2026-10-28 · Character select smooth at Render Scale x2 and x4, and HUD Nearest by default
+- With Render Scale at x2 or x4 (Options, Extended, Video), character select and the other
+  screens before the world are smooth again. The HUD's Sharp filter (Extended, UI, HUD), which
+  draws the menus' art, did far more work for each pixel than it needed, and those screens
+  are covered in that art from edge to edge: at the larger scales a browser could fall below
+  30 frames a second there while Freeport, crowds and all, kept up. Sharp now does about a
+  quarter of the work and looks exactly as before; the start menu's windows and the HUD in
+  the world are lighter with it too.
+- HUD is back to Nearest by default, the PS2's own way of drawing the menus' and the HUD's
+  art, which costs the least to draw. Sharp is still on that row for anyone who wants every
+  texel of that art drawn evenly at any window size (if you had chosen it, choose it again).
+
+## 2026-10-27 · The touch controls laid out as a PS4 controller
+- On a phone or tablet held sideways the on-screen controller is now laid out like a
+  PS4 controller, with two sticks: the left one walks and the right one turns the camera.
+  The d-pad sits above the left stick and the face buttons above the right one, L1/L2 and
+  R1/R2 above those, Select and Start at the top in the middle, and L3 and R3 just above
+  their sticks. Each stick starts where your thumb lands near it.
+- Held upright, the same controller sits along the bottom of the screen.
+- Every button now fits on the screen. In a phone's browser the bottom of the game used to
+  sit under the browser's toolbar, which cut off the lowest buttons.
+- All the buttons stay on every screen, Station's login and the windows over the game
+  among them. Over a window they are drawn a little fainter, and a tap anywhere off them
+  still goes to the window.
+
+## 2026-10-27 · Full screen in the browser, and the page as an app
+- In a browser the game now goes full screen as soon as you press Start: on an Android phone
+  or tablet, and on a computer in Chrome, Edge or another Chromium-based browser. Escape is
+  still the game's key there: tap it as always, and hold it to leave full screen. F11 still
+  switches to a window and back.
+- On Android, if you leave full screen (the back gesture, another app), your next touch on
+  the game puts it back.
+- With another window of the game open (multiboxing), Start leaves your windows as they are.
+- The page can be installed as an app. In Chrome and Edge an "Install EQOA as an app" button
+  shows under Start once you have used the page a little; on an iPhone or iPad choose Add to
+  Home Screen in the browser's Share menu (iPhones let no web page go full screen, so this
+  is the way there). Started from your Home Screen or your apps it is full screen with none
+  of the browser round it, and it keeps the game files it unpacks from your disc between
+  visits, so it starts quicker.
+
+## 2026-10-27 · Running and turning at the PS2's own speed, at any frame rate
+- Running, walking, turning and swimming now go exactly as fast as on a PS2, whatever your
+  display's frame rate. Before, the higher the frame rate the faster you went: at 165 frames
+  a second you ran about 5% faster and turned 6% faster than a PS2 player, and the speed
+  also shifted a little with where you stood and which way you faced.
+- It is as smooth as before: the game still draws every frame your display shows. Only the
+  movement underneath keeps the PS2's own 30 steps a second, and your character is drawn
+  on the way between them, on the controls you hold that moment.
+
+## 2026-10-27 · Character select shows your race's set alone, and your volume from the start
+- Character select and creation draw your race's own set and nothing past it, as the PS2 does:
+  the other races' sets no longer show in the distance behind your character, and with them
+  gone the screen draws much faster.
+- Your Fx and Music Volume are used from the very first sound: the loading pictures, the
+  agreement and the title no longer play at full volume before your settings take hold.
+- In a browser on an iPhone or iPad, the disc image can be chosen: iOS greyed it out, as it
+  knows no file type for a disc image. The page still checks that it is the right disc.
+
+## 2026-10-27 · Updates with two windows open, and lighter fireballs
+- An update now goes through while another window of the game is still open on the version
+  before. On Windows a running program can't be replaced, and the copy the last update set
+  aside was still running in that window, so every look for an update failed ("Access is
+  denied") until every window was closed. If yours has said it could not update, close every
+  window of the game once and start it again.
+- Where the Lavastorm throws its fireballs (round Klick'Anon), each frame takes a little less
+  of your computer: the client made 31 new buffers a frame for them, and now keeps its own.
+
+## 2026-10-27 · A sharp HUD by default, and the world's textures smooth again
+- The HUD's and the windows' art is drawn sharp now unless you choose otherwise, every pixel
+  the same size at any window size, as the text already was. Options > Extended > UI > HUD
+  puts back the game's own look (Nearest).
+- Options > Extended > World > Textures is gone: the world's textures are drawn smooth, as
+  the game draws them. Crisp did not suit them.
+
+## 2026-10-27 · Render Scale, and a sharper HUD and textures if you want them
+- Options > Extended > Video > Render Scale: x2 or x4 draws the whole picture two or four
+  times larger and shrinks it to fit your window, which smooths jagged edges, leaves, fences
+  and thin things. x1, the default, is as before. x4 needs a good graphics card, and on a big
+  window it draws at the most your card allows (the page tells you when it does).
+- Options > Extended > UI > HUD: Sharp draws the HUD's and the windows' art with every pixel
+  the same size at any window size, the way Text: Sharp draws the letters. Nearest, the
+  default, is the game's look.
+- Options > Extended > World > Textures: Crisp draws the world's walls, props, characters
+  and plants sharp, each pixel of their textures a flat square. The ground, the sky, water
+  and glows stay smooth, so roads still blend into grass and snow. Smooth, the default, is
+  the game's look.
+- Text (Sharp or Smooth) is on the UI page now, beside HUD.
+
+## 2026-10-27 · The map, the minimap and the extra bars are gone
+- This client keeps to the game: the additions it never had are taken out. Gone are the map
+  (M) with its waypoints, group waypoints, XP camps, coaches, routes and community markers, the
+  minimap (N), the quest markers, the quest tracker and the quest guide behind them, the Stats
+  Box (B), the power bars under your group, your target and its target, and the Target of
+  Target bar.
+- What a computer adds stays: widescreen, any frame rate, the mouse, the touch screen, the
+  keyboard and the Controls page, controllers, several windows at once and the Extended options.
+- F still targets whomever your target is targeting: it is the game's Assist Target.
+- Your options, keys and buttons stay as you left them.
+
+## 2026-10-27 · Multiboxing: a window in the back keeps its frame rate
+- On Windows, the game now asks Windows not to slow it down while its window is not in
+  front (Windows 11 slows programs in the back to save power), so the box you are not
+  playing keeps its frame rate. On a Mac it asks macOS not to put it to sleep in the back
+  (App Nap) or bunch up its timers.
+- In a browser, the browser decides how fast a window in the back runs: on Windows 11,
+  Task Manager's Efficiency mode (the green leaf) on the browser, or a power-saving power
+  mode, can slow it.
+- A problem report now says how fast each window drew while it was in the back.
+
+## 2026-10-27 · The page says when your browser is not using the graphics card
+- In the browser, if the game is being drawn without your graphics card (in software, as
+  Windows' "Microsoft Basic Render Driver" does), the page now says so: on the start card, in
+  a message at the top you can dismiss, and beside the frame rate in the corner while you
+  play. The game runs slowly that way, whatever the settings. To fix it, turn on the
+  browser's graphics acceleration (Chrome or Edge: Settings > System > "Use graphics
+  acceleration when available", then relaunch the browser) and update your graphics card's
+  driver.
+- The program does the same check, and says so in its log, which a problem report carries.
+
+## 2026-10-27 · Network Setup: finishing the address takes you back to the title
+- On the title's Network Setup, finishing the server's address (Enter, or R2's End) now
+  keeps it and goes straight back to the title, ready for Play. Before, the page stayed open
+  and only △ (Escape) left it. An address that is not a server address is still refused
+  with a message, and the page stays so you can fix it.
+- The small edit box you get when typing on a keyboard: its End and Cancel can now be
+  clicked or tapped before you are in the world too (Network Setup, Station's login, a new
+  character's name), as they already could in the world.
+
+## 2026-10-27 · Tab picks targets as on a PS2 in a wide window
+- In a window wider than a TV's 4:3 (most monitors), Tab (R1 on a controller) now picks the
+  next target in the same order a PS2 does: creatures in front of you and close come first,
+  and ones off to the side later. Before, the wider the window, the less being off to the
+  side counted, so a creature near the edge of the screen was often picked before one
+  straight ahead.
+- Creatures you can only see because the window is wide can still be picked.
+
+## 2026-10-27 · A waypoint for your whole group
+- On the map, hold □ (or Q) for a moment to put a waypoint for your whole group. Everyone in
+  your group playing this client sees it on their map, minimap and compass, in orange, with
+  your name under it on the map. A quick press of □ still puts your own magenta waypoint.
+- On a keyboard G does it at once, or hold Shift and click a spot; on a touch screen hold your
+  finger on the spot. G can be moved on the Controls page.
+- It goes where □ would put yours: the middle of the map once you have moved the map, else on
+  your target, else where you stand, to call the group to you.
+- It reaches your group as a line in the group's chat, so it works on any server and a player
+  on a PS2 reads it too: "Dairine tells the group: Waypoint in Tunaria at x 24611, z 15502 near
+  Freeport". One every few seconds.
+- The group's waypoint goes when you reach it, when the one who put it leaves the group or you
+  do, or when you click it on the map. A newer one replaces it.
+
+## 2026-10-27 · Waypoints and map suggestions on your target
+- With someone targeted and in view (a merchant, a quest giver, a creature), □ (Q) on the map
+  puts your waypoint right on them; press it again to take it away. A white ring shows your
+  target on the map.
+- Suggest (N, or L3 on a controller) takes your target's spot too, with their name already
+  typed in for you to keep or change.
+- What you choose on the map still comes first: once you move the map, □ goes in its middle,
+  and Suggest takes the spot you point at or a waypoint you just put. With no target, both
+  work as before.
+
+## 2026-10-27 · No more creatures fighting you while lying dead
+- A creature or a pet could come into view lying on the ground as if dead, then run after
+  you and fight like that. It happened where many look alike, in a camp of one kind: when
+  one came into sight just as a corpse of its kind went out of it, the game gave it the
+  corpse's body. Each creature that comes into view now gets a body of its own, standing,
+  as on a PS2.
+
+## 2026-10-26 · Play on a phone or a tablet from the first screen
+- On a phone or a tablet you can now play from the very first screen: tap your way through
+  the licence, the title, Station's login, the server list and character select and
+  creation. ✕ △ ○ □ stay on screen the whole way, and in the world the whole on-screen pad
+  is there as before.
+- In the browser, tapping a name or password box brings up your device's own keyboard. The
+  game's on-screen keyboard still works too, by tapping its keys.
+- The update notes' Back and the failed update's Restart can now be clicked or tapped.
+- On a touch screen, the bug report's buttons now take a tap.
+
+## 2026-10-26 · A Stats Box, and N for the minimap
+- A Stats Box: your stats (Str to Cha, AC, max HP and power, the resists) in a small box
+  under your effect icons. A buff that raises a stat shows it in blue, a debuff that lowers
+  one in red. It is off unless you turn it on: Options > Extended > UI > Stats Box, or press
+  B. Click or tap it to open your Summary.
+- Press N to show or hide the minimap. Both keys can be moved, or given a controller
+  button, on the Controls page.
+- Options > Extended: Text (Sharp or Smooth) is on the Video page now.
+
+## 2026-10-26 · Spell visuals on yourself and on a target at once
+- On the Help match spell visuals page, "Lands on: the caster and a second human" plays a
+  visual both ways at once: the human on the left casts it on itself while the one beside
+  it casts it on a second human, so a buff, a debuff and a damage spell can be told apart
+  without switching back and forth. The page remembers what you picked.
+- The training dummy is gone from that preview: its small size shrank what landed on it.
+  A harmful spell now lands on a second human.
+- W and S step to the visual before and after in the list from anywhere on the page, the
+  preview too, except while you type in a box.
+
+## 2026-10-26 · A server's patch in the browser too
+- In the browser the game now takes the server's patch, as the program does: on
+  Sandstorm, its damage colours, robes and armour, menus, words and the rest, where the
+  page played every server as the plain disc before. The patch comes from the server's
+  own website (https), so a server whose site serves its patch files gives it; one that
+  does not is played as before.
+- The page keeps the patch between visits, so the next start fetches only what changed.
+
+## 2026-10-26 · Community markers on the map
+- The map shows places other players suggested and a GM accepted: a pin each, coloured by what it
+  marks (a landmark, a camp, a quest's place, a merchant, a way to travel, a danger), its name
+  beside it when you zoom in, and what it is when you point at it. X hides them with the other
+  markers. The list comes from eqoaclassic.com whichever server you play on, and is kept for a
+  start with no connection.
+- Suggest one of your own: put your waypoint on the spot (a click on the map), or point at it, and
+  press N (L3 on a controller, or the map's Suggest button). Type its name, then a note if you
+  like; Enter sends it for a GM's approval, Escape sends nothing. The map says when it went.
+
+## 2026-10-26 · Voice chat was only a test
+- Voice chat was only a test, and it is out of the game and the page: the voice chat window (O)
+  and the microphone badge beside the minimap, the /voice commands, Voice Chat, Voice Demo and
+  Voice Volume in Options > Extended > Sound, and the push-to-talk keys (V and N) on the Controls
+  page.
+- The game asks nothing of your microphone any more. Your other options and keys are kept as
+  they were.
+
+## 2026-10-26 · A controller that turns up mid-game
+- On Windows the game no longer stops when a controller turns up while it runs (Steam can make
+  one as a window comes to the front, and two pads made it likelier): until Windows has finished
+  connecting it, the game passes over what it sends, and reads it from then on.
+
+## 2026-10-26 · New swings at once, Extended's menu
+- A level reached while you play counts for your swings at once: at 20 and at 35, where a round
+  gains hits, your character swings the new round straight away instead of after you log out and
+  in again.
+- Options > Extended's menu has room for all eight of its parts: Quests no longer sits on top
+  of Select and Back.
+- A problem or crash report says which version you are on and what the game found when it last
+  looked for a new one, so a game that stops updating itself tells us why; a crash report also
+  carries only that run's own details.
+
 ## 2026-10-26 · A voice chat window
 - Press O (or type /voice in the chat) for the voice chat window: turn voice chat on or off and
   pick Push to Talk or Open Mic, see whether you are connected and how loud your microphone is,

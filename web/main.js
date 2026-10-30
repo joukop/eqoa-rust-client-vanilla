@@ -7,15 +7,25 @@
 // (window.eqoaReport).
 import init, { boot, view, client_state, want_shot, crash_test, disc_id, disc_2002, update_notices, hidden_tick } from './eqoa.js';
 import { canRemember, keptHandle, keepHandle, forgetHandle } from './discstore.js';
-// voice chat's engine (window.eqoaVoice: WebRTC to the server's forwarding server)
-import './voice.js';
 
 const $ = (id) => document.getElementById(id);
 // the client's own graphics line ("graphics: <adapter> (<backend>)"), for reports
 let clientGraphics = '';
+// a software renderer's name, as WebGL's unmasked renderer, WebGPU's adapter
+// info or the client's adapter names it: SwiftShader, Mesa's llvmpipe,
+// softpipe and lavapipe, "Software Rasterizer"/"Software Renderer", and
+// Windows' WARP, "Microsoft Basic Render Driver" (F3 20261027-003944: a
+// steady 27 fps, never told why). gpustart.rs keeps the same list natively.
+const SOFTWARE = /swiftshader|llvmpipe|softpipe|lavapipe|software|basic render driver/i;
+let software = false; // the browser draws without the graphics card (noteSoftware)
+let softwareTold = false; // its notice was raised (once a page)
 const status = (t) => {
-  $('status').textContent = t;
-  if (t.startsWith('graphics: ')) clientGraphics = t.slice(10);
+  if (t.startsWith('graphics: ')) {
+    clientGraphics = t.slice(10);
+    if (SOFTWARE.test(clientGraphics)) noteSoftware(/\(Gl\)$/.test(clientGraphics) ? 'WebGL2' : 'WebGPU');
+  }
+  // in the world the status line keeps saying it
+  $('status').textContent = software && t && document.body.classList.contains('playing') ? `${t} · drawn without the graphics card` : t;
 };
 window.eqoaStatus = status;
 // report.js's, when it loaded (it is a module of its own, before this one)
@@ -63,14 +73,6 @@ window.eqoaAudio = {
 // a context the browser kept suspended starts on the next key or click
 for (const ev of ['pointerdown', 'keydown']) {
   addEventListener(ev, () => { if (audio && audio.ctx.state === 'suspended') audio.ctx.resume().catch(() => {}); });
-}
-
-// F11 is the browser's own full screen. The canvas cancels every key it is
-// given (winit's listener), so F11 is kept from it, caught on its way down
-// before the canvas sees it, and left to the browser; the canvas follows the
-// window's new size.
-for (const ev of ['keydown', 'keyup']) {
-  addEventListener(ev, (e) => { if (e.key === 'F11') e.stopImmediatePropagation(); }, true);
 }
 
 // The mouse look asks for the pointer through winit, which drops the promise
@@ -184,17 +186,14 @@ function error(where, text) {
 
 let started = false; // the game or the viewer began: a reload would end it
 
-// The game server's IPv4 address when the game's Network Setup names none:
-// given, or this page's host as the relay resolves it (the relay reaches
-// only the server's own ports anyway).
+// The game server when the game's Network Setup names none: given, or this
+// page's host. Kept a name, not resolved here: the client resolves it through
+// the relay for each connection itself, and fetches the server's patch over
+// https by it, which an address has no certificate for.
 async function serverAddress(relay) {
   const given = $('server').value.trim();
   if (given) return given;
-  const host = location.hostname;
-  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) return host;
-  const r = await fetch(relay.replace(/^ws/, 'http') + '/resolve?name=' + encodeURIComponent(host));
-  if (!r.ok) throw new Error('the relay could not resolve ' + host);
-  return (await r.text()).trim();
+  return location.hostname;
 }
 
 function busy(on) {
@@ -206,6 +205,7 @@ $('gate').addEventListener('submit', async (ev) => {
   startAudio(); // in the gesture itself, before anything is awaited
   const file = $('iso').files[0];
   if (!file) return error('gate', 'Pick your disc image first.');
+  fullScreen(); // in the gesture too
   keepFields();
   started = true;
   busy(true);
@@ -236,6 +236,7 @@ window.eqoaBooted = () => {
 $('view').addEventListener('click', async () => {
   const file = $('iso').files[0];
   if (!file) return error('gate', 'Pick your disc image first.');
+  fullScreen();
   keepFields();
   started = true;
   busy(true);
@@ -265,7 +266,75 @@ window.eqoaDisconnected = (text) => {
   }
 }
 
-$('eqoa').addEventListener('pointerdown', () => $('eqoa').focus());
+// A phone's or a tablet's own keyboard for the game's edit boxes (Station's
+// name and password, Network Setup's address, creation's name, play's editor):
+// while the client says one has the keys (window.eqoaWantText), a touch on the
+// canvas puts the focus in a hidden input (in the touch, so the keyboard comes
+// up: a browser shows it only for a user's gesture), and what is typed there
+// goes to the canvas as the key events a keyboard's would be. Nothing typed is
+// kept or logged: the input holds a few spaces between keystrokes, and what
+// changed is all that is read.
+const typed = document.createElement('input');
+typed.id = 'eqoatyped';
+typed.type = 'text';
+typed.setAttribute('aria-hidden', 'true');
+typed.tabIndex = -1;
+for (const [k, v] of [['autocomplete', 'off'], ['autocorrect', 'off'], ['autocapitalize', 'none'], ['spellcheck', 'false'], ['inputmode', 'text'], ['enterkeyhint', 'done']]) typed.setAttribute(k, v);
+// out of sight, 16 px so no browser zooms to it, at the top so none scrolls to it
+typed.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;border:0;padding:0;font-size:16px;pointer-events:none';
+document.body.append(typed);
+const TYPED_REST = '    ';
+let typedLast = TYPED_REST;
+let wantText = false;
+const keyTo = (key) => {
+  for (const type of ['keydown', 'keyup']) $('eqoa').dispatchEvent(new KeyboardEvent(type, { key, code: '', cancelable: true }));
+};
+const typedRest = () => {
+  typed.value = TYPED_REST;
+  typedLast = TYPED_REST;
+  try { typed.setSelectionRange(TYPED_REST.length, TYPED_REST.length); } catch { /* not focused */ }
+};
+typed.addEventListener('input', (e) => {
+  // what changed since the last: characters taken away (Backspace each), then the ones put in
+  const v = typed.value;
+  let same = 0;
+  while (same < v.length && same < typedLast.length && v[same] === typedLast[same]) same++;
+  for (let k = same; k < typedLast.length; k++) keyTo('Backspace');
+  for (const ch of v.slice(same)) keyTo(ch === '\n' ? 'Enter' : ch);
+  typedLast = v;
+  // a word still being put together by the keyboard is left alone until it is done
+  if (!e.isComposing) typedRest();
+});
+typed.addEventListener('compositionend', typedRest);
+typed.addEventListener('keydown', (e) => {
+  // a keyboard's keys that put nothing in the input: as they are
+  if (['Enter', 'Escape', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+    e.preventDefault();
+    keyTo(e.key);
+  } else if (e.key === 'Backspace' && typed.value === '') {
+    keyTo('Backspace');
+    typedRest();
+  }
+});
+const typeHere = () => {
+  typedRest();
+  typed.focus({ preventScroll: true });
+};
+let lastTouch = false;
+window.eqoaWantText = (on) => {
+  wantText = !!on;
+  if (!wantText && document.activeElement === typed) $('eqoa').focus();
+  // the touch that opened the box still the user's gesture: the keyboard up at once
+  // (where a browser allows it; else at the next touch)
+  if (wantText && lastTouch && navigator.userActivation && navigator.userActivation.isActive) typeHere();
+};
+$('eqoa').addEventListener('pointerdown', (e) => {
+  lastTouch = e.pointerType === 'touch';
+  $('eqoa').focus();
+});
+// winit puts the focus on the canvas at every press: a touch while the game
+// wants text puts it back in the input, the device's keyboard with it
+$('eqoa').addEventListener('pointerup', (e) => { if (wantText && e.pointerType === 'touch') typeHere(); });
 
 // ---- a DNAS module off the disc (CLIENT, for the start menu): unpacked by
 // the disc's own library in a worker (unpack.js), and kept in this origin's
@@ -326,54 +395,6 @@ window.eqoaUnpack = async (name, util, aut, fresh) => {
   const out = await unpackInWorker(util, aut);
   if (file) keep(file, out).catch(() => { /* no storage here: unpacked again next time */ });
   return out;
-};
-
-// ---- the map's pictures (the client's map, M: map/store.rs): each zone's
-// tile and overview cell, kept in this origin's private storage under
-// map/<the world's key>, so a world's map is drawn once. A write commits
-// whole on close; a page with no storage (plain http to another host) keeps
-// nothing and draws the map again each visit.
-
-async function mapDir(key, create) {
-  const root = await navigator.storage.getDirectory();
-  return (await root.getDirectoryHandle('map', { create })).getDirectoryHandle(key, { create });
-}
-
-window.eqoaMapGet = async (key, name) => {
-  try {
-    const f = await (await (await mapDir(key, false)).getFileHandle(name)).getFile();
-    return new Uint8Array(await f.arrayBuffer());
-  } catch {
-    return null;
-  }
-};
-
-window.eqoaMapPut = async (key, name, bytes) => {
-  try {
-    const w = await (await (await mapDir(key, true)).getFileHandle(name, { create: true })).createWritable();
-    await w.write(bytes);
-    await w.close();
-  } catch { /* no storage here: drawn again next time */ }
-};
-
-window.eqoaMapList = async (key) => {
-  const out = [];
-  try {
-    for await (const name of (await mapDir(key, false)).keys()) out.push(name);
-  } catch { /* none kept */ }
-  return out;
-};
-
-// the same world's older pictures (another build of the map or of the
-// world's file): directories named for its file but not `key`
-window.eqoaMapPrune = async (key) => {
-  try {
-    const stem = key.slice(0, key.lastIndexOf('-'));
-    const map = await (await navigator.storage.getDirectory()).getDirectoryHandle('map', { create: true });
-    for await (const name of map.keys()) {
-      if (name !== key && name.slice(0, name.lastIndexOf('-')) === stem) await map.removeEntry(name, { recursive: true });
-    }
-  } catch { /* nothing to let go */ }
 };
 
 // ---- graphics: which path the client will take (web::gfx asks for a WebGPU
@@ -456,13 +477,15 @@ async function checkGraphics() {
     try { adapter = await navigator.gpu.requestAdapter(); } catch { /* none */ }
   }
   const info = adapter && adapter.info || {};
-  if (adapter && !(info.architecture === 'swiftshader' || adapter.isFallbackAdapter || info.isFallbackAdapter)) {
-    say('ok', 'Graphics: WebGPU' + (info.vendor ? ', on ' + info.vendor.toUpperCase() : '') + '. The fastest path.');
+  const fallback = info.architecture === 'swiftshader' || adapter && adapter.isFallbackAdapter || info.isFallbackAdapter
+    || SOFTWARE.test([info.vendor, info.architecture, info.device, info.description].join(' '));
+  if (adapter && !fallback) {
+    // a line the client's adapter may yet correct (noteSoftware)
+    if (!software) say('ok', 'Graphics: WebGPU' + (info.vendor ? ', on ' + info.vendor.toUpperCase() : '') + '. The fastest path.');
     return;
   }
   if (adapter) {
-    say('meh', 'Graphics: WebGPU, but drawn in software (no GPU). It will be slow.');
-    gfxHelp(b, 'The browser is not using the graphics card.');
+    noteSoftware('WebGPU');
     return;
   }
   let renderer = '';
@@ -471,13 +494,51 @@ async function checkGraphics() {
     const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
     renderer = gl ? String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : '';
   } catch { /* no WebGL2 either: the client says so when it starts */ }
-  if (/swiftshader|llvmpipe|softpipe|software/i.test(renderer)) {
-    say('meh', 'Graphics: WebGL2, drawn in software (no GPU). It will be slow.');
-    gfxHelp(b, 'The browser is not using the graphics card.');
+  if (SOFTWARE.test(renderer)) {
+    noteSoftware('WebGL2');
     return;
   }
+  if (software) return;
   say('meh', 'Graphics: WebGL2. It works, but costs about twice the CPU of WebGPU.');
   gfxHelp(b, 'WebGPU is not available here.');
+}
+
+// What the player can do about a browser drawing without the graphics card,
+// in a few words for the notice: its graphics acceleration on, as its
+// browser names it, and the graphics card's driver brought up to date.
+function softwareFix(b) {
+  if (b.chromium) return 'Turn on graphics acceleration (Chrome or Edge: Settings > System > "Use graphics acceleration when available", then relaunch; chrome://gpu shows whether it is on) and update the graphics card\'s driver.';
+  if (b.firefox) return 'Turn on hardware acceleration (Settings > General > Performance: untick "Use recommended performance settings", tick "Use hardware acceleration when available", then restart Firefox) and update the graphics card\'s driver.';
+  return 'Turn on the browser\'s graphics acceleration in its settings, restart it, and update the graphics card\'s driver.';
+}
+
+// The browser draws without the graphics card, through `api` ('WebGPU' or
+// 'WebGL2'), as the page's probe or the client's adapter found: the card's
+// line says so with the steps, the status line in the world from its next
+// update (status), and a notice once a page.
+function noteSoftware(api) {
+  software = true;
+  const b = browser();
+  const state = $('gfx-state');
+  state.className = 'state meh';
+  state.textContent = `Graphics: ${api}, drawn without the graphics card (software). The game will be slow.`;
+  const help = $('gfx-help');
+  if (b.chromium) {
+    help.replaceChildren(
+      el('p', { textContent: 'The browser is not using the graphics card. To turn graphics acceleration on:' }),
+      el('ol', {},
+        el('li', {}, 'Open this and turn on "Use graphics acceleration when available":', flag('chrome://settings/system')),
+        el('li', { textContent: 'Relaunch the browser, then reload this page.' }),
+        el('li', {}, 'Still not on? This page says why:', flag('chrome://gpu')),
+        el('li', { textContent: 'Update the graphics card\'s driver.' })));
+  } else {
+    help.replaceChildren(el('p', { textContent: 'The browser is not using the graphics card. ' + softwareFix(b) }));
+  }
+  if (softwareTold) return;
+  softwareTold = true;
+  const text = `The browser is drawing without the graphics card, so the game will be slow. ${softwareFix(b)}`;
+  if (report) report.notice('software-graphics', '', text, [['Dismiss', () => report.notice('software-graphics')]]);
+  else console.warn(text);
 }
 
 // ---- the disc image: which disc it is, by the program it starts
@@ -504,6 +565,14 @@ $('iso').addEventListener('change', async () => {
     discLine = `${line.textContent} (${file.size} bytes)`;
   }
 });
+
+// iOS turns an input's `accept` into file types and knows none for a disc
+// image's .iso, .bin or .img, so its picker greys the image out in every
+// browser there (all of them WebKit; Chrome on an iPhone, 2026-10-27: "it
+// doesn't let you select the ISO"). The disc is judged here anyway (SYSTEM.CNF,
+// `disc_id`), so on iOS the inputs take any file.
+const onIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+if (onIOS) for (const id of ['iso', 'iso2002']) $(id).removeAttribute('accept');
 
 // ---- the 2002 disc: EverQuest Online Adventures (USA), SLUS-20470, whose
 // art F9 swaps in (crates/eqoa/src/era.rs). Optional, judged by the client's
@@ -789,9 +858,160 @@ if (canRemember) {
     if ($('iso').files.length || !rememberOn() || !remembered.disc) return; // the form's own way
     ev.preventDefault();
     startAudio(); // in the gesture itself, as the form's submit does
+    // not full screen yet: a full screen asked for uses the click's activation
+    // up, and the browser's ask for the disc needs it; the submit asks for
+    // full screen once the disc is in, if the activation lasted
     takeAgain('iso').then((ok) => { if (ok) $('gate').requestSubmit(); });
   });
 }
+
+// ---- full screen (the user, 2026-10-27: "the browser build should force
+// full screen, mobile players cant figure it out", and "still allow f11 to
+// non fullscreen"). Start and View put the whole page full screen in their
+// own click (the page, not the canvas: the notices, the report dialog and the
+// phone keyboard's input stay on it), where it can stay so:
+// - on a phone or a tablet (`eqoaTouchFirst`), in any browser that lets a
+//   page. One left (the back gesture, another app) comes back at the next
+//   touch on the game, but not while an edit box has the keyboard (that touch
+//   puts it up);
+// - on a computer only where Escape stays the game's (its windows, its
+//   menus): a browser ends a page's full screen on Escape, but Chromium-based
+//   ones let the page keep it (Keyboard Lock; held, it still ends it, as the
+//   browser says on entering). Firefox's and Safari's full screen stays F11's
+//   alone, as before. Not with another window of the game open in this
+//   browser either: multiboxing, the windows side by side.
+// F11 stays the browser's: in a window its own full screen, in any full
+// screen (the page's too) back to a window (Chromium takes it before the
+// page there). The canvas cancels every key it is given (winit's listener),
+// so F11 is kept from it, caught on its way down, and left to the browser.
+// iOS lets no page on an iPhone go full screen, and an iPad's Safari ends
+// one at the first key typed ("Typing is not allowed in full screen
+// websites"): there the app off the Home Screen is full screen (`installWhat`).
+
+const full = { said: 'not asked' }; // what the page last asked or heard, for a report
+// Escape can stay the game's in a page's full screen
+const keepsEscape = !!(navigator.keyboard && typeof navigator.keyboard.lock === 'function');
+// full screen already: the page's, the browser's own (F11), or an installed app's
+const shownFull = () => !!document.fullscreenElement || matchMedia('(display-mode: fullscreen)').matches;
+// a browser and a device where the page puts itself full screen
+const canFull = () => !!document.fullscreenEnabled && !onIOS && (window.eqoaTouchFirst() || keepsEscape);
+// another window of the game is open in this browser (the places multibox.rs reads)
+const multiboxing = () => windows.live.some((n) => n !== windows.place);
+
+function fullScreen() {
+  if (!canFull() || shownFull()) return;
+  if (!window.eqoaTouchFirst() && multiboxing()) {
+    full.said = 'not asked: another window of the game is open';
+    return;
+  }
+  full.said = 'asked';
+  let asked;
+  try {
+    asked = document.documentElement.requestFullscreen({ navigationUI: 'hide' });
+  } catch (e) {
+    asked = Promise.reject(e);
+  }
+  Promise.resolve(asked).catch((e) => {
+    full.said = `refused (${e && e.message ? e.message : e})`;
+    console.log(`full screen ${full.said}`);
+  });
+}
+
+document.addEventListener('fullscreenchange', () => {
+  const on = !!document.fullscreenElement;
+  full.said = on ? 'on' : 'left';
+  if (!keepsEscape) return;
+  if (!on) {
+    navigator.keyboard.unlock();
+    return;
+  }
+  navigator.keyboard.lock(['Escape']).then(
+    () => { if (document.fullscreenElement) full.said = 'on, Escape the game’s'; },
+    (e) => { full.said = `on, Escape not kept (${e && e.message ? e.message : e})`; });
+});
+
+for (const ev of ['keydown', 'keyup']) {
+  addEventListener(ev, (e) => { if (e.key === 'F11') e.stopImmediatePropagation(); }, true);
+}
+
+$('eqoa').addEventListener('pointerup', (e) => {
+  if (e.pointerType !== 'mouse' && started && !wantText && window.eqoaTouchFirst()) fullScreen();
+});
+
+// For a report.
+function fullFacts() {
+  const where = !document.fullscreenEnabled ? 'the browser lets no page'
+    : onIOS ? 'none on iOS (the Home Screen app is)'
+    : window.eqoaTouchFirst() ? 'from Start, and again at a touch'
+    : keepsEscape ? 'from Start, Escape the game’s'
+    : 'F11’s alone (Escape would end the page’s)';
+  const now = document.fullscreenElement ? 'the page’s' : shownFull() ? 'the browser’s or the app’s' : 'a window';
+  return `${where}; now ${now}; last: ${full.said}`;
+}
+
+// ---- installing the page as an app (the user, 2026-10-27: "we can add the
+// install app feature for each"). The build's manifest (manifest.json: this
+// page, full screen, the drawn disc's icons) lets a browser install the
+// page: started from the Home Screen or the apps it is full screen, with
+// nothing of the browser round it, and its storage is the app's (the
+// modules unpacked off the disc stay: Safari clears a site's after a week
+// unused, not a Home Screen app's). It draws no faster: the engine is the
+// browser's. Chromium-based browsers offer the install themselves once the
+// page has been used a little (`beforeinstallprompt`): the card's button asks
+// for it. The others keep it in a menu, and the card says which: iOS's Share
+// menu (an iPhone's only full screen), Firefox's on Android, any phone
+// browser's, Safari's File menu on a Mac. Started as the app, the card says
+// nothing of it.
+
+const install = { prompt: null, said: '' };
+// started as an installed app (judged as the page opens: a browser's F11 full
+// screen, entered later, is the same display mode)
+const asApp = navigator.standalone === true || matchMedia('(display-mode: fullscreen), (display-mode: standalone), (display-mode: minimal-ui)').matches;
+
+function installWhat() {
+  const b = browser();
+  let text = '';
+  if (install.said === 'accepted' || install.said === 'installed') {
+    text = 'Installed: start EQOA from your Home Screen or your apps from now on.';
+  } else if (install.prompt) {
+    text = 'Then it starts from your Home Screen or your apps, full screen, with nothing of the browser round it.';
+  } else if (onIOS) {
+    text = 'For full screen on an iPhone or iPad, install it: in the browser’s Share menu choose Add to Home Screen, then start EQOA from your Home Screen.';
+  } else if (window.eqoaTouchFirst()) {
+    text = b.firefox
+      ? 'To install it as an app (full screen, from your Home Screen), choose Install in Firefox’s menu.'
+      : 'To install it as an app (full screen, from your Home Screen), choose Install app or Add to Home screen in the browser’s menu.';
+  } else if (b.safari) {
+    text = 'To install it as an app, choose File > Add to Dock in Safari.';
+  }
+  $('install-go').hidden = !install.prompt;
+  $('install-what').textContent = text;
+  $('install').hidden = asApp || !text;
+}
+
+addEventListener('beforeinstallprompt', (e) => {
+  install.prompt = e;
+  if (!install.said) install.said = 'offered';
+  installWhat();
+});
+addEventListener('appinstalled', () => {
+  install.prompt = null;
+  install.said = 'installed';
+  installWhat();
+});
+$('install-go').addEventListener('click', async () => {
+  const p = install.prompt;
+  if (!p) return;
+  install.prompt = null;
+  try {
+    await p.prompt();
+    install.said = (await p.userChoice).outcome; // 'accepted' or 'dismissed'
+  } catch (e) {
+    install.said = `failed (${e && e.message ? e.message : e})`;
+  }
+  installWhat();
+});
+installWhat();
 
 // ---- updates: this page is one build (web/build.sh puts each in
 // v/<build>/, kept as it is for good), and version.json beside the page names
@@ -922,6 +1142,8 @@ if (report) {
     `disc: ${discLine || ($('iso').files.length ? 'picked, not identified' : 'none picked')}`,
     `2002 disc: ${disc2002Line || ($('iso2002').files.length ? 'picked, not identified' : 'none picked')}`,
     `remember: ${rememberFacts()}`,
+    `full screen: ${fullFacts()}`,
+    `app: ${asApp ? 'started as the installed app' : install.said || (install.prompt ? 'offered' : 'not offered')}`,
     `panel: ${$('gate').hidden ? 'none (the game)' : 'gate'}, status: ${$('status').textContent}`,
     `relay ${$('relay').value || '-'}, server ${$('server').value || '(this host)'}`,
     `sound: ${JSON.stringify(window.eqoaAudio.stats())}`,

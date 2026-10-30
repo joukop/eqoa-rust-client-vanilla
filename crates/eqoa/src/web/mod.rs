@@ -32,8 +32,6 @@ mod disc;
 mod fxview;
 pub mod pad;
 pub mod relay;
-// voice chat's engine (web/voice.js) and the voice demo's socket
-pub mod voice;
 
 use crate::{sky, viewer};
 use disc::WebDisc;
@@ -174,6 +172,20 @@ pub fn set_title(t: &str) {
     if let Some(d) = web_sys::window().and_then(|w| w.document()) {
         d.set_title(t);
     }
+}
+
+/// An edit box of the game's has the keys now, or none has: the page puts
+/// a phone's or a tablet's own keyboard up for it at the next touch, and its
+/// characters come to the canvas as key events (`window.eqoaWantText`,
+/// main.js).
+pub fn want_text(on: bool) {
+    call_page("eqoaWantText", &JsValue::from_bool(on));
+}
+
+/// The keys coming now are the device's own keyboard's, not a keyboard's:
+/// the page's input for the game's edit boxes has the focus (`want_text`).
+pub fn device_keyboard() -> bool {
+    web_sys::window().and_then(|w| w.document()).and_then(|d| d.active_element()).is_some_and(|e| e.id() == "eqoatyped")
 }
 
 /// Whether the page is on a touch-first device (`window.eqoaTouchFirst`:
@@ -826,6 +838,22 @@ fn world_loader(disc: &WebDisc) -> crate::pregame::host::WorldLoader {
                 log(&format!("{n} zones read round the spawn"));
                 for name in SHARED.iter().copied().chain(["CHAR.ESF", "ITEM.ESF", "ARIAL.CSF", "UI.CSF", "ARIALUI.CSF", "ITEMICON.ESF", "SPELLFX.CSF", "FX.CSF", "ADDART.CSF"]) {
                     add(&mut lib, &mut d, name).await?;
+                    // a server's patch's own names for CHAR.ESF's art (`s2`:
+                    // Sandstorm's set 9), as natively
+                    if name == "CHAR.ESF" {
+                        crate::s2::get().register_art(&mut lib);
+                    }
+                }
+                // a server's patch's own art (`s2`: Sandstorm's ss-art.csf,
+                // robes 4 and 5), out of the server's folder, as natively
+                let rules = crate::s2::get();
+                if let Some(b) = rules.folder_bytes(&rules.art_file) {
+                    match esf::Container::open(b) {
+                        Ok(c) => {
+                            lib.add(rules.art_file.to_uppercase(), c);
+                        }
+                        Err(e) => log(&format!("s2: {}: {e:?}", rules.art_file)),
+                    }
                 }
                 // the 2002 disc's art while it is the art drawn (`era`, F9):
                 // its files in place of their namesakes, read with the world's

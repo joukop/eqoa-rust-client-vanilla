@@ -105,6 +105,38 @@ pub(crate) struct Billboards {
     layout: wgpu::PipelineLayout,
     pipelines: std::collections::HashMap<(usize, bool, bool), wgpu::RenderPipeline>,
     sampler: wgpu::Sampler,
+    /// what each of a frame's draws keeps from frame to frame (`Slot`)
+    slots: [Option<Kept>; 4],
+    /// a texture's bind group by its key (`Textures::key`; none: white),
+    /// made once: the renderer's textures are never let go
+    groups: std::collections::HashMap<Option<u64>, wgpu::BindGroup>,
+}
+
+/// A frame's draws through the billboard program, each with buffers of its
+/// own kept between frames (made anew every frame, they were 31 uniform
+/// buffers, 62 bind groups and a vertex buffer a frame under the Lavastorm's
+/// fireballs, which in a page held it near 50 fps at Klick'Anon, F3
+/// 20261027-025514). Each is drawn at most once a submit: its buffers are
+/// written by the queue, which writes before the submit's commands run.
+#[derive(Clone, Copy)]
+enum Slot {
+    /// the sky's billboards (stars, the weather's lightning patches)
+    Sky = 0,
+    /// the world's triangle strips (lightning, weapon trails)
+    Strips = 1,
+    /// the world's billboards (particles, rain, snow, fireballs)
+    World = 2,
+    /// the world's billboards drawn after the shadows (the weather's,
+    /// `draw_late_billboards`)
+    Late = 3,
+}
+
+/// A slot's vertex buffer (grown, never shrunk) and its two frame
+/// uniforms with their bind groups: an opaque run's (blend 0) and the rest's.
+struct Kept {
+    verts: wgpu::Buffer,
+    capacity: u64,
+    frames: [(wgpu::Buffer, wgpu::BindGroup); 2],
 }
 
 impl Billboards {
@@ -148,7 +180,7 @@ impl Billboards {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        Billboards { shader, frame_layout, tex_layout, layout, pipelines: Default::default(), sampler }
+        Billboards { shader, frame_layout, tex_layout, layout, pipelines: Default::default(), sampler, slots: [None, None, None, None], groups: Default::default() }
     }
 
     fn pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat, key: (usize, bool, bool)) -> &wgpu::RenderPipeline {
@@ -204,7 +236,27 @@ impl Renderer {
         batches: &[Batch],
         textures: &Textures,
     ) {
-        self.billboards(device, queue, encoder, target, depth, view, proj, batches, textures, false);
+        self.billboards(device, queue, encoder, target, depth, view, proj, batches, textures, Slot::World);
+    }
+
+    /// The world's billboards after the shadows and the strips
+    /// (`VIScene::Render`: the weather after `RenderShadows`, the spell
+    /// effects and the trails), as `draw_billboards` draws them but through a
+    /// buffer of their own.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_late_billboards(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        view: Mat4,
+        proj: Mat4,
+        batches: &[Batch],
+        textures: &Textures,
+    ) {
+        self.billboards(device, queue, encoder, target, depth, view, proj, batches, textures, Slot::Late);
     }
 
     /// Billboards that belong to the sky (`VIAtmosphere::RenderStars`: the
@@ -224,14 +276,14 @@ impl Renderer {
         batches: &[Batch],
         textures: &Textures,
     ) {
-        self.billboards(device, queue, encoder, target, depth, view, proj, batches, textures, true);
+        self.billboards(device, queue, encoder, target, depth, view, proj, batches, textures, Slot::Sky);
     }
 
-    /// The billboards, after any strips; `far` puts them at the far plane
-    /// with Z off. The strips are the world's (the lightning, the weapon
-    /// trails), drawn by the world's call alone: the sky's comes first and
-    /// its view has no translation, so taken there they went where nothing
-    /// is (F3 20261026-041245: no spell's bolt was ever seen in the world).
+    /// The billboards; `far` puts them at the far plane with Z off. The
+    /// strips are not drawn here: the sky's view has no translation, so taken
+    /// there they went where nothing is (F3 20261026-041245: no spell's bolt
+    /// was ever seen in the world), and the world's are drawn after the
+    /// particles and the shadows (`draw_queued_strips`).
     #[allow(clippy::too_many_arguments)]
     fn billboards(
         &mut self,
@@ -244,14 +296,9 @@ impl Renderer {
         proj: Mat4,
         batches: &[Batch],
         textures: &Textures,
-        far: bool,
+        slot: Slot,
     ) {
-        if !far {
-            let strips = std::mem::take(&mut self.strips);
-            if !strips.is_empty() {
-                self.draw_strips(device, queue, encoder, target, depth, view, proj, &strips, textures);
-            }
-        }
+        let far = matches!(slot, Slot::Sky);
         let mut verts: Vec<Vert> = Vec::new();
         let mut draws = Vec::new();
         for b in batches.iter().filter(|b| !b.quads.is_empty()) {
@@ -267,7 +314,27 @@ impl Renderer {
             let key = if far { (b.blend.min(4), true, false) } else { (b.blend.min(4), b.ztest, b.zwrite) };
             draws.push((key, b.texture, start, verts.len() as u32));
         }
-        self.draw_verts(device, queue, encoder, target, depth, view, proj, &verts, &draws, textures, far);
+        self.draw_verts(device, queue, encoder, target, depth, view, proj, &verts, &draws, textures, slot);
+    }
+
+    /// The strips queued for this frame (`strips`: the spell lightning, then
+    /// the weapon trails), drawn and let go.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_queued_strips(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::TextureView,
+        depth: &wgpu::TextureView,
+        view: Mat4,
+        proj: Mat4,
+        textures: &Textures,
+    ) {
+        let strips = std::mem::take(&mut self.strips);
+        if !strips.is_empty() {
+            self.draw_strips(device, queue, encoder, target, depth, view, proj, &strips, textures);
+        }
     }
 
     /// Triangle strips (lightning), over what `draw` drew, in the order given.
@@ -298,11 +365,11 @@ impl Renderer {
                 draws.push(((s.blend.min(4), s.ztest, s.zwrite), s.texture, start, verts.len() as u32));
             }
         }
-        self.draw_verts(device, queue, encoder, target, depth, view, proj, &verts, &draws, textures, false);
+        self.draw_verts(device, queue, encoder, target, depth, view, proj, &verts, &draws, textures, Slot::Strips);
     }
 
     /// The billboard program over `verts`, a run of them per (pipeline key,
-    /// texture).
+    /// texture), through `slot`'s kept buffers; the sky's at the far plane.
     #[allow(clippy::too_many_arguments)]
     fn draw_verts(
         &mut self,
@@ -316,37 +383,63 @@ impl Renderer {
         verts: &[Vert],
         runs: &[Run],
         textures: &Textures,
-        far: bool,
+        slot: Slot,
     ) {
-        use wgpu::util::DeviceExt;
-        if runs.is_empty() {
+        if runs.is_empty() || verts.is_empty() {
             return;
         }
+        let far = matches!(slot, Slot::Sky);
         let mut draws = Vec::new();
         for &(key, texture, start, end) in runs {
             let tex = self.texture(device, queue, texture, textures);
             let key = gs_key(key, tex.is_some());
-            draws.push((key, start, end, tex.unwrap_or_else(|| self.white.clone())));
+            draws.push((key, start, end, tex.is_some().then(|| textures.key(texture)), tex));
         }
-        let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("billboards"), contents: bytemuck::cast_slice(verts), usage: wgpu::BufferUsages::VERTEX });
         let format = self.format;
+        let white = self.white.clone();
         let bb = self.billboards.get_or_insert_with(|| Billboards::new(device));
-        let mut groups = Vec::new();
-        for (key, _, _, tex) in &draws {
-            let blend = key.0;
-            let u = FrameU { view: view.to_cols_array_2d(), proj: proj.to_cols_array_2d(), flags: [if blend == 0 { 1.0 } else { 0.5 }, (blend == 0) as i32 as f32, far as i32 as f32, crate::effects_lod_k()] };
-            let ub = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("billboard frame"), contents: bytemuck::bytes_of(&u), usage: wgpu::BufferUsages::UNIFORM });
-            let fbg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &bb.frame_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() }] });
-            let tbg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: None,
-                layout: &bb.tex_layout,
-                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(tex) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&bb.sampler) }],
-            });
-            groups.push((fbg, tbg));
+        let bytes: &[u8] = bytemuck::cast_slice(verts);
+        let size = bytes.len() as u64;
+        let kept = &mut bb.slots[slot as usize];
+        if kept.as_ref().is_none_or(|k| k.capacity < size) {
+            let capacity = size.next_power_of_two().max(64 << 10);
+            let verts = device.create_buffer(&wgpu::BufferDescriptor { label: Some("billboards"), size: capacity, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+            let frames = match kept.take() {
+                Some(k) => k.frames,
+                None => [0, 1].map(|_| {
+                    let ub = device.create_buffer(&wgpu::BufferDescriptor { label: Some("billboard frame"), size: std::mem::size_of::<FrameU>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &bb.frame_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: ub.as_entire_binding() }] });
+                    (ub, bg)
+                }),
+            };
+            *kept = Some(Kept { verts, capacity, frames });
         }
-        for (key, _, _, _) in &draws {
+        let Some(kept) = bb.slots[slot as usize].as_ref() else { return };
+        queue.write_buffer(&kept.verts, 0, bytes);
+        // an opaque run alpha-tests at 128 (the TEST of an unblended layer)
+        for (i, opaque) in [true, false].into_iter().enumerate() {
+            if draws.iter().any(|d| (d.0.0 == 0) == opaque) {
+                let u = FrameU { view: view.to_cols_array_2d(), proj: proj.to_cols_array_2d(), flags: [opaque as i32 as f32, far as i32 as f32, crate::effects_lod_k(), 0.0] };
+                queue.write_buffer(&kept.frames[i].0, 0, bytemuck::bytes_of(&u));
+            }
+        }
+        for (_, _, _, id, tex) in &draws {
+            if !bb.groups.contains_key(id) {
+                let tbg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &bb.tex_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(tex.as_ref().unwrap_or(&white)) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&bb.sampler) },
+                    ],
+                });
+                bb.groups.insert(*id, tbg);
+            }
+        }
+        for (key, _, _, _, _) in &draws {
             bb.pipeline(device, format, *key);
         }
+        let kept = bb.slots[slot as usize].as_ref().expect("made above");
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("billboards"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -364,11 +457,11 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_vertex_buffer(0, vb.slice(..));
-        for ((key, start, end, _), (fbg, tbg)) in draws.iter().zip(&groups) {
+        pass.set_vertex_buffer(0, kept.verts.slice(..size));
+        for (key, start, end, id, _) in &draws {
             pass.set_pipeline(&bb.pipelines[key]);
-            pass.set_bind_group(0, fbg, &[]);
-            pass.set_bind_group(1, tbg, &[]);
+            pass.set_bind_group(0, &kept.frames[(key.0 != 0) as usize].1, &[]);
+            pass.set_bind_group(1, &bb.groups[id], &[]);
             pass.draw(*start..*end, 0..1);
         }
     }

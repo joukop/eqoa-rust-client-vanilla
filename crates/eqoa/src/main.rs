@@ -15,7 +15,6 @@
 //! eqoa view <world> walk <n>     the character, walking in a zone
 //! eqoa shot <file> [model | zone <n>] <out.png> [camera]   one view, offscreen
 //! eqoa listen <world> <x> <z> <seconds> <out.wav> [hour] [walk]   the world's sound there, offline
-//! eqoa mapshot <world> <out.png> [x z [heading [scale [secs]]]]   the map (M) built as in play, drawn
 //! eqoa fxview [visual [secs]]   a human casting a spell visual at another, again and again, as
 //!                               0x00B1 plays it (the GM panel's preview; `fxview`); with an
 //!                               out.png after the visual, `[ms,...] [secs]`: drawn at those times
@@ -48,6 +47,10 @@ mod chat;
 mod dialog;
 mod attackclock;
 mod auction;
+mod admin;
+mod buffpc;
+mod gotownd;
+mod netstat;
 mod auctionwnd;
 mod bank;
 mod camreach;
@@ -75,8 +78,8 @@ mod fog;
 mod frames;
 mod group;
 mod guild;
-// the music off a disc read asynchronously: a page's (natively, its tests)
-#[cfg(any(target_arch = "wasm32", test))]
+// the music read whole before it plays: off a page's disc, read
+// asynchronously, and natively on a thread of its own
 mod bgm;
 mod bindpage;
 mod binds;
@@ -84,6 +87,7 @@ mod blacksmith;
 mod gear;
 mod gram;
 mod hideui;
+mod livewords;
 mod hud;
 mod damage;
 mod display;
@@ -95,23 +99,28 @@ mod input;
 mod padmap;
 mod spellbook;
 mod infotext;
+mod live;
+mod listbox;
+mod groupsearch;
 mod inventory;
 mod itemmenu;
 mod classmastery;
 mod cs;
 mod faction;
+mod fishing;
+mod duel;
+mod duelwnd;
 mod loading;
 mod lod;
 mod loot;
-mod map;
+// the memory a report and the log carry (F3 crash 20261026-220031)
+mod mem;
 mod merchant;
 mod modules;
 mod mouse;
 mod multibox;
 mod quantity;
-mod questguide;
 mod questlog;
-mod tracker;
 mod quickchat;
 mod alarm;
 mod startmenu;
@@ -135,24 +144,26 @@ mod pregame;
 mod rings;
 mod scene;
 mod servers;
+mod shadows;
 mod sky;
 mod spelling;
 mod touch;
 mod sound;
 mod spells;
+mod stall;
 mod stream;
 #[cfg(not(target_arch = "wasm32"))]
 mod gpulost;
 #[cfg(not(target_arch = "wasm32"))]
 mod gpustart;
+#[cfg(not(target_arch = "wasm32"))]
+mod nothrottle;
 mod report;
 mod ui;
 mod update;
 #[cfg(not(target_arch = "wasm32"))]
 mod updatewnd;
 mod viewer;
-mod voice;
-mod voicewnd;
 mod wndlist;
 mod walker;
 mod weather;
@@ -492,7 +503,8 @@ fn run(args: &[String]) -> Result<()> {
                 Ok((s * 1000.0) as i32)
             };
             let lib = fxview::library_off(&mut disc(None)?)?;
-            // `EQOA_FX_AIM=caster|human|dummy`: what the cast lands on (a dummy)
+            // `EQOA_FX_AIM=caster|human|dummy|both`: what the cast lands on (a
+            // dummy; `both` a second human, and a third casting at itself)
             let aim = std::env::var("EQOA_FX_AIM").ok().and_then(|a| fxview::Aim::parse(&a));
             match rest.get(1).filter(|a| a.ends_with(".png")) {
                 Some(out) => {
@@ -520,29 +532,6 @@ fn run(args: &[String]) -> Result<()> {
             let cues = args[7.min(args.len())..].iter().any(|a| a == "cues");
             let fight = args[7.min(args.len())..].iter().any(|a| a == "fight");
             listen(file, x, z, secs, out, hour, walk, cues, fight)?;
-        }
-        Some("mapshot") => {
-            // `eqoa mapshot <world> <out.png> [x z [heading [scale [secs]]]]`: the
-            // world's map built as in play and drawn round (x, z)
-            let usage = "usage: eqoa mapshot <world> <out.png> [x z [heading [scale [secs]]]]";
-            let world = args.get(1).ok_or(usage)?.to_uppercase();
-            let out = args.get(2).ok_or(usage)?;
-            let num = |i: usize| args.get(i).map(|v| v.parse::<f32>()).transpose();
-            let size = std::env::var("EQOA_SHOT_SIZE").ok().and_then(|v| {
-                let (w, h) = v.split_once('x')?;
-                Some((w.parse().ok()?, h.parse().ok()?))
-            });
-            let budget = std::env::var("EQOA_MAP_BUDGET").ok().and_then(|v| v.parse().ok());
-            let shot = map::tool::Shot {
-                world,
-                at: [num(3)?.unwrap_or(25300.0), num(4)?.unwrap_or(15200.0)],
-                heading: num(5)?.unwrap_or(0.0),
-                scale: num(6)?,
-                size: size.unwrap_or((1280, 720)),
-                secs: num(7)?.unwrap_or(120.0),
-                budget_ms: budget,
-            };
-            map::tool::shot(&shot, out)?;
         }
         Some("login") => {
             let host = args.get(1).ok_or("usage: eqoa login <host> <user> (password in EQOA_PASSWORD)")?;
@@ -610,6 +599,8 @@ fn boot(image: Option<&str>, server: Option<String>) -> Result<()> {
     {
         report::start();
         gpulost::begin();
+        // a window in the back kept at its pace by the system too (multiboxing)
+        nothrottle::keep_pace();
     }
     // a newer build on the release, asked for while the boot's pictures show
     #[cfg(not(target_arch = "wasm32"))]
@@ -727,7 +718,7 @@ fn login(host: &str, user: &str, pass: &str) -> Result<(net::session::Session, n
     let port = |v: &str, d: u16| std::env::var(v).ok().and_then(|p| p.parse().ok()).unwrap_or(d);
     let l = net::auth::login((host, port("EQOA_AUTH_PORT", 9735)), user, pass)?;
     eprintln!("auth: account {} status {} features {:#x}", l.account, l.status, l.game_features);
-    let server = std::net::ToSocketAddrs::to_socket_addrs(&(host, port("EQOA_GAME_PORT", 10070)))?.next().ok_or("no address")?;
+    let server = net::addr::resolve(host, port("EQOA_GAME_PORT", 10070))?;
     let mut s = Session::connect(server, user, l.token)?;
     let t = std::time::Instant::now();
     while t.elapsed() < std::time::Duration::from_secs(30) {

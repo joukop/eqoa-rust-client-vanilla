@@ -11,6 +11,7 @@
 //! (its DRDP source is the player's own entity id), answered with 0x0014,
 //! 0x00C9 and 0x00CA.
 
+use crate::addr::Nat64;
 use crate::stream::{Reader, Writer};
 use drdp::{Addr, ConnId, Drdp, PORT_LEADER, address_to_endpoint};
 use std::net::{SocketAddr, UdpSocket};
@@ -25,20 +26,36 @@ pub trait Datagrams {
     fn recv_from(&mut self) -> Option<(Vec<u8>, [u8; 4], u16)>;
 }
 
-/// A non-blocking UDP socket.
+/// A non-blocking UDP socket: IPv4, or on a network with IPv6 alone an IPv6
+/// one through the network's gateway to IPv4 (`addr::Nat64`).
 pub struct Udp {
     socket: UdpSocket,
     buf: Vec<u8>,
+    nat64: Option<Nat64>,
 }
 
 impl Datagrams for Udp {
     fn send_to(&mut self, data: &[u8], ip: [u8; 4], port: u16) {
-        let _ = self.socket.send_to(data, SocketAddr::from((ip, port)));
+        let to = match &self.nat64 {
+            Some(n) => n.to_v6(ip, port),
+            None => SocketAddr::from((ip, port)),
+        };
+        let _ = self.socket.send_to(data, to);
     }
 
     fn recv_from(&mut self) -> Option<(Vec<u8>, [u8; 4], u16)> {
-        let (n, p) = self.socket.recv_from(&mut self.buf).ok()?;
-        Some((self.buf[..n].to_vec(), ipv4(&p), p.port()))
+        loop {
+            let (n, p) = self.socket.recv_from(&mut self.buf).ok()?;
+            let ip = match &self.nat64 {
+                // one not from under the gateway's prefix is no server's
+                Some(g) => match g.to_v4(&p) {
+                    Some(ip) => ip,
+                    None => continue,
+                },
+                None => ipv4(&p),
+            };
+            return Some((self.buf[..n].to_vec(), ip, p.port()));
+        }
     }
 }
 
@@ -54,136 +71,38 @@ pub const EXPANSION_FLAGS: u32 = 3;
 /// for it (its dispatcher has no default), so a PS2 ignores the offer, and
 /// nothing is sent to a server that made none.
 pub const OP_ENTITY_VIEW: u16 = 0x7E00;
-/// go-eqoa-server's own, no retail message: others' power, for the bars the
-/// client draws under its group's, its target's and their target's health
-/// (the game shows no one's but the player's own). A u32 after the opcode,
-/// both ways: the server offers it (1) once the player is in the world, the
-/// client answers 1 to have it and 0 to stop (`agree_power_bars`). A PS2
-/// ignores the offer, as it does [`OP_ENTITY_VIEW`]'s; nothing is asked of a
-/// server that made none.
-pub const OP_POWER_BARS: u16 = 0x7E01;
-/// The power, from a server the client asked ([`OP_POWER_BARS`]): a u8
-/// count, then each a u32 id (as this client knows the entity) and a u8
-/// power of 255. Each is the whole set: an id it leaves out has no bar.
-pub const OP_POWER_BARS_DATA: u16 = 0x7E02;
-/// go-eqoa-server's own, no retail message: the quest marks the map draws (a
-/// "!" at each giver of a quest the player may take, a "?" where a step of
-/// its quests is to be done). A u32 after the opcode, both ways, as
-/// [`OP_POWER_BARS`]: offered once the player is in the world, answered 1 to
-/// have them and 0 to stop (`agree_quest_marks`). A PS2 ignores the offer.
-pub const OP_QUEST_MARKERS: u16 = 0x7E03;
-/// The marks, from a server the client asked ([`OP_QUEST_MARKERS`]): a u8
-/// count, then each its u8 kind ([`QuestMark::kind`]), u8 world, f32 x and z,
-/// the NPC's name and a u8 count of quests, each its name, u8 lowest and
-/// highest levels, a line and a detail; every text a u8 byte count and UTF-8.
-/// Each is the whole set.
-pub const OP_QUEST_MARKERS_DATA: u16 = 0x7E04;
-/// go-eqoa-server's own too: the quest tracker the HUD draws (each quest
-/// under way and what its step asks, counted: "Bat Eye 0/3"), offered and
-/// answered as [`OP_QUEST_MARKERS`] is (`agree_quest_progress`).
-pub const OP_QUEST_PROGRESS: u16 = 0x7E05;
-/// The tracker, from a server the client asked ([`OP_QUEST_PROGRESS`]): a u8
-/// count of quests (the journal's, in its order), each its name and a u8
-/// count of objectives, each its text, u16 had and u16 needed (needed 0:
-/// nothing to count); every text a u8 byte count and UTF-8. Each is the
-/// whole tracker.
-pub const OP_QUEST_PROGRESS_DATA: u16 = 0x7E06;
-
-/// One quest on the tracker ([`OP_QUEST_PROGRESS_DATA`]): its name and its
-/// step's objectives.
-#[derive(Clone, Debug, PartialEq)]
-pub struct TrackedQuest {
-    pub name: String,
-    pub goals: Vec<QuestGoal>,
-}
-
-/// One objective: its words, and how many the player has of how many are
-/// needed (`need` 0: a thing to do, nothing to count).
-#[derive(Clone, Debug, PartialEq)]
-pub struct QuestGoal {
-    pub text: String,
-    pub have: u16,
-    pub need: u16,
-}
-
-impl QuestGoal {
-    /// Counted, and all there.
-    pub fn done(&self) -> bool {
-        self.need > 0 && self.have >= self.need
-    }
-}
-
-/// [`OP_QUEST_PROGRESS_DATA`]'s body, or None when it is short.
-fn read_quest_progress(r: &mut Reader) -> Option<Vec<TrackedQuest>> {
-    let text = |r: &mut Reader| {
-        let n = r.u8() as usize;
-        String::from_utf8_lossy(r.bytes(n)).into_owned()
-    };
-    let n = r.u8() as usize;
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        let name = text(r);
-        let g = r.u8() as usize;
-        let goals = (0..g)
-            .map(|_| {
-                let text = text(r);
-                QuestGoal { text, have: r.u16(), need: r.u16() }
-            })
-            .collect();
-        out.push(TrackedQuest { name, goals });
-    }
-    (!r.error).then_some(out)
-}
-
-/// One quest mark ([`OP_QUEST_MARKERS_DATA`]).
-#[derive(Clone, Debug, PartialEq)]
-pub struct QuestMark {
-    /// 1 a quest the player may take from this NPC ("!"), 2 a step of its
-    /// quests to do at it ("?"), 3 a kill or loot step's creature ("?")
-    pub kind: u8,
-    /// `gWorldInfo`'s index
-    pub world: u8,
-    pub x: f32,
-    pub z: f32,
-    /// the NPC's (or the creature's) name
-    pub npc: String,
-    pub quests: Vec<MarkQuest>,
-}
-
-/// One quest on a mark: its name and levels, a line (the start of the
-/// giver's offer, or the step's journal line) and a detail (its rewards, or
-/// what the step needs).
-#[derive(Clone, Debug, PartialEq)]
-pub struct MarkQuest {
-    pub name: String,
-    pub levels: (u8, u8),
-    pub line: String,
-    pub detail: String,
-}
-
-/// [`OP_QUEST_MARKERS_DATA`]'s body, or None when it is short.
-fn read_quest_marks(r: &mut Reader) -> Option<Vec<QuestMark>> {
-    let text = |r: &mut Reader| {
-        let n = r.u8() as usize;
-        String::from_utf8_lossy(r.bytes(n)).into_owned()
-    };
-    let n = r.u8() as usize;
-    let mut out = Vec::with_capacity(n);
-    for _ in 0..n {
-        let (kind, world, x, z) = (r.u8(), r.u8(), r.f32(), r.f32());
-        let npc = text(r);
-        let q = r.u8() as usize;
-        let quests = (0..q)
-            .map(|_| {
-                let name = text(r);
-                let levels = (r.u8(), r.u8());
-                MarkQuest { name, levels, line: text(r), detail: text(r) }
-            })
-            .collect();
-        out.push(QuestMark { kind, world, x, z, npc, quests });
-    }
-    (!r.error).then_some(out)
-}
+/// go-eqoa-server's own, no retail message either: the GM's trigger names, a
+/// u32 after the opcode, both ways. The server offers them (1) to a GM's
+/// client beside the GM channel's 0x0700 35; this client answers 1 at once
+/// and is then sent the names (0x7E08, `admin::read_triggers`) whenever they
+/// change. A PS2 ignores the offer, as it ignores [`OP_ENTITY_VIEW`]'s.
+pub const OP_GM_TRIGGERS: u16 = 0x7E07;
+/// go-eqoa-server's own, no retail message either: the live game's duel
+/// messages (0x1501 up, 0x1502 down, the client's `duel` part and its
+/// window), a u32 after the opcode, both ways. The server offers them (1)
+/// once the player is in the world; this client has the window and answers 1
+/// at once, and is then sent 0x1502 where a client without it gets boxes. A
+/// PS2 ignores the offer, as it ignores [`OP_ENTITY_VIEW`]'s.
+pub const OP_DUEL_WINDOW: u16 = 0x7E09;
+/// go-eqoa-server's own, no retail message either: SOE's live game's look, a
+/// u32 after the opcode, both ways. The server offers it (1) after the
+/// session's first character list; this client answers 1 at once: it reads
+/// the live CLIENT's entity channel ([`crate::entity::LIVE_STATE_SIZE`]
+/// bytes, a colour per held item, armour slot and robe) and its 0x002C
+/// record ([`LIVE_GEAR_SIZE`] raw bytes). A PS2 ignores the offer; Sandstorm
+/// never makes one, so its channels and lists stay the disc's.
+pub const OP_LIVE_LOOK: u16 = 0x7E0C;
+/// The server's answer to [`OP_LIVE_LOOK`], a u32: the look in force from it
+/// on (1 the live game's, 0 the disc's). Every character list after it is in
+/// that look (lists are guaranteed messages, in order); a client still
+/// choosing is sent its list again.
+pub const OP_LIVE_LOOK_IN_FORCE: u16 = 0x7E0D;
+/// The raw part of a 0x002C record: the disc's, and the live game's
+/// (`CharacterList`, Corsten's 0x012CC018: no robe tint, six ArmorGroup
+/// variants where the disc's has tints, then the held items', armour slots'
+/// and robe's colours).
+pub const DISC_GEAR_SIZE: usize = 32;
+pub const LIVE_GEAR_SIZE: usize = 71;
 
 #[derive(Clone, Debug)]
 pub struct Shard {
@@ -205,7 +124,9 @@ pub struct Character {
     pub hair_length: i64,
     pub hair_style: i64,
     pub face: i64,
-    /// The 32 raw bytes after the zigzag fields (robe, weapons, armour).
+    /// The raw bytes after the zigzag fields (robe, weapons, armour): the
+    /// disc's [`DISC_GEAR_SIZE`], or the live game's [`LIVE_GEAR_SIZE`] when
+    /// its look is in force.
     pub gear: Vec<u8>,
 }
 
@@ -409,40 +330,11 @@ pub struct Session {
     /// offered on this connection ([`OP_ENTITY_VIEW`]); none from one that
     /// never does (every retail server, Sandstorm's too).
     pub entity_view_offer: Option<(u32, u32)>,
-    /// Whether the server offered others' power on this connection
-    /// ([`OP_POWER_BARS`]), what it was last told (none since the offer),
-    /// and the set it last sent ([`OP_POWER_BARS_DATA`]: ids and power of
-    /// 255).
-    pub power_bars_offer: bool,
-    power_bars_asked: Option<bool>,
-    pub power_bars: Vec<(u32, u8)>,
-    /// Whether the server offered quest marks ([`OP_QUEST_MARKERS`]), what it
-    /// was last told, and the set it last sent ([`OP_QUEST_MARKERS_DATA`]).
-    pub quest_marks_offer: bool,
-    quest_marks_asked: Option<bool>,
-    pub quest_marks: Vec<QuestMark>,
-    /// The same for the quest tracker ([`OP_QUEST_PROGRESS`],
-    /// [`OP_QUEST_PROGRESS_DATA`]).
-    pub quest_progress_offer: bool,
-    quest_progress_asked: Option<bool>,
-    pub quest_progress: Vec<TrackedQuest>,
-    /// Voice ([`crate::voice`]): whether the server offered it on this
-    /// connection, what it was last told, the fallback ICE servers and their
-    /// time to live it last sent (none before it sent any since voice was
-    /// on), the roster and the lobby it last sent, the rooms' answers not yet
-    /// taken, the signals come in whole and not yet taken
-    /// (`take_voice_signals`), the parts of those still coming, and this
-    /// client's next message number.
-    pub voice_offer: bool,
-    voice_asked: Option<u32>,
-    pub voice_ice: Option<Vec<crate::voice::WireIce>>,
-    pub voice_ttl: u32,
-    pub voice_roster: Vec<crate::voice::WireMember>,
-    pub voice_lobby: Option<Vec<crate::voice::WireRoom>>,
-    voice_room_states: Vec<(u8, String)>,
-    voice_in: Vec<(u8, String)>,
-    voice_parts: crate::voice::Reassembly,
-    voice_seq: u32,
+    /// The live game's look is in force ([`OP_LIVE_LOOK_IN_FORCE`] said so):
+    /// character lists are read as the live CLIENT's, and the entity channels
+    /// of its length too (`entity::Entities::live_look`). Kept for the
+    /// session, as the server keeps it, through the world's connection.
+    pub live_look: bool,
     user: String,
     token: [u8; 32],
     start: Instant,
@@ -450,6 +342,11 @@ pub struct Session {
     /// Datagrams sent so far: `usocket_sendto_addr` draws newlib's `rand()`
     /// twice for each, so a client keeping animation in step draws as many.
     pub packets_sent: u64,
+    /// Datagrams read so far, and when `pump` last read one: what a stall's
+    /// line says of the server (the client's `stall`: still sending while
+    /// the client was held, or gone quiet before).
+    pub datagrams_in: u64,
+    pub last_datagram: Option<Instant>,
     /// `EQOA_NET_DEBUG`: every datagram and message on stderr.
     debug: bool,
     /// `m_p382E4`, the chat mode: the last one 0x000E sent (`GroupChanged`
@@ -468,6 +365,50 @@ pub struct Session {
     /// test's view of what was sent and when, before the transport's own
     /// flow decides when it leaves. None in play.
     pub record: Option<Vec<(u8, Vec<u8>)>>,
+    /// 0x0790's probe (`m_p4F0F0`, `m_p4F0F8`, `m_p4F100`, `m_p4F108`),
+    /// clear from `Connect` on.
+    pub probe: Probe,
+}
+
+/// 0x0790's probe: `Msg0790` keeps an endpoint, a token and eight more
+/// bytes; `Msg0790Done`, before each of the frame's flushes, sends 0x0992
+/// (the token and the bytes) outside any connection to that endpoint, at
+/// most once a connection timeout (a second at most), for as long as the
+/// session lasts; and `Msg0993` answers the token coming back (a DRDP type
+/// 0xF8: a datagram outside any connection) with 0x0791 on the game
+/// connection. No server we know sends 0x0790 (none in Sandstorm's
+/// captures, none in go-eqoa-server).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Probe {
+    /// `m_p4F0F0`: the endpoint 0x0992 goes to; -1 none (`Connect`'s)
+    pub endpoint: i64,
+    /// `m_p4F0F8`: the token
+    pub token: u32,
+    /// `m_p4F100`: the eight bytes after it
+    pub data: u64,
+    /// `m_p4F108`: when 0x0992 last went, on `timer`'s clock; -1 never
+    pub last: i64,
+}
+
+impl Default for Probe {
+    fn default() -> Self {
+        Probe { endpoint: -1, token: 0, data: 0, last: -1 }
+    }
+}
+
+/// Where the DRDP clock (`Session::now`) starts: the wall clock's
+/// milliseconds, their low 30 bits. As the whole u32 the clock passed 2^31
+/// at 2026-10-28 00:54:06 UTC, and the loading screen's gears, an animation
+/// begun at 0 on it, stopped every client entering the world; it would have
+/// wrapped at 2026-11-21 21:25:29.7 UTC, and every timer on it that
+/// subtracts as an i64 (the loading screen's, the alarm's, the windows')
+/// would have stalled in a session across that moment. From here it stays
+/// below 2^31 for 12 days of a session and never wraps, as the console's,
+/// which is its own clock since boot. The low 16 bits, the client's drdp
+/// port (`drdp_create_addr`), are the wall clock's as before, and the
+/// instance (the clock at creation) keeps 30 of its bits.
+pub fn clock_base(wall_ms: u128) -> u32 {
+    (wall_ms % (1 << 30)) as u32
 }
 
 fn ipv4(a: &SocketAddr) -> [u8; 4] {
@@ -479,23 +420,30 @@ fn ipv4(a: &SocketAddr) -> [u8; 4] {
 
 impl Session {
     /// `VIClient::Connect`: a DRDP client on a fresh UDP socket, a connection
-    /// to the login endpoint, the hello and 0x0904.
+    /// to the login endpoint, the hello and 0x0904. A server at an IPv6
+    /// address (a name with no IPv4 one, `addr::resolve`) is reached through
+    /// the network's gateway to IPv4, as is every shard after it.
     pub fn connect(server: SocketAddr, user: &str, token: [u8; 32]) -> std::io::Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
+        let (nat64, server_ip) = match Nat64::of(&server) {
+            Some((n, ip)) => (Some(n), ip),
+            None => (None, ipv4(&server)),
+        };
+        let any = if nat64.is_some() { "[::]:0" } else { "0.0.0.0:0" };
+        let socket = UdpSocket::bind(any)?;
         // The local address as the server will see it: route a probe.
-        let probe = UdpSocket::bind("0.0.0.0:0")?;
+        let probe = UdpSocket::bind(any)?;
         probe.connect(server)?;
         let local = SocketAddr::new(probe.local_addr()?.ip(), socket.local_addr()?.port());
         socket.set_nonblocking(true)?;
-        let udp = Udp { socket, buf: vec![0u8; 65536] };
-        Self::connect_with(Box::new(udp), (ipv4(&local), local.port()), (ipv4(&server), server.port()), user, token)
+        let udp = Udp { socket, buf: vec![0u8; 65536], nat64 };
+        Self::connect_with(Box::new(udp), (ipv4(&local), local.port()), (server_ip, server.port()), user, token)
             .ok_or_else(|| std::io::Error::other("connection_open failed"))
     }
 
     /// `connect` over any datagram carrier: `local` is the address the
     /// server will see the client at (a relay's own, through one).
     pub fn connect_with(socket: Box<dyn Datagrams>, local: ([u8; 4], u16), server: ([u8; 4], u16), user: &str, token: [u8; 32]) -> Option<Self> {
-        let base = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u32).unwrap_or(1);
+        let base = clock_base(SystemTime::now().duration_since(UNIX_EPOCH).map_or(1, |d| d.as_millis()));
         let mut drdp = Drdp::<Ee>::create_client(Addr { ip: local.0, port: local.1 }, base);
         drdp.set_port_udp(local.1);
         let mut s = Session {
@@ -506,36 +454,21 @@ impl Session {
             self_id: None,
             expansion: 0,
             entity_view_offer: None,
-            power_bars_offer: false,
-            power_bars_asked: None,
-            power_bars: Vec::new(),
-            quest_marks_offer: false,
-            quest_marks_asked: None,
-            quest_marks: Vec::new(),
-            quest_progress_offer: false,
-            quest_progress_asked: None,
-            quest_progress: Vec::new(),
-            voice_offer: false,
-            voice_asked: None,
-            voice_ice: None,
-            voice_ttl: 0,
-            voice_roster: Vec::new(),
-            voice_lobby: None,
-            voice_room_states: Vec::new(),
-            voice_in: Vec::new(),
-            voice_parts: crate::voice::Reassembly::default(),
-            voice_seq: 0,
+            live_look: false,
             user: user.to_string(),
             token,
             start: Instant::now(),
             base,
             packets_sent: 0,
+            datagrams_in: 0,
+            last_datagram: None,
             debug: std::env::var_os("EQOA_NET_DEBUG").is_some(),
             chat_mode: 0,
             held: Vec::new(),
             clock_a: SyncTime::default(),
             clock_b: SyncTime::default(),
             record: None,
+            probe: Probe::default(),
         };
         let dst = address_to_endpoint(server.0, server.1, PORT_LEADER);
         let sys = s.drdp.system_endpoint;
@@ -622,7 +555,6 @@ impl Session {
         self.send(&w.data);
     }
 
-    /// `SendOpcodeByte(op, v)`.
     /// [`OP_ENTITY_VIEW`] to the server: how many entity slots this client
     /// keeps and how far it draws them (a server that offered them fills that
     /// many from that far).
@@ -632,137 +564,7 @@ impl Session {
         self.send(&w.data);
     }
 
-    /// Mana Bars: a server that offered others' power ([`OP_POWER_BARS`])
-    /// is told whether to send it (`want`), at once and whenever that
-    /// changes; one that made no offer is told nothing. Off, the set it
-    /// sent is forgotten.
-    pub fn agree_power_bars(&mut self, want: bool) {
-        if !want {
-            self.power_bars.clear();
-        }
-        if !self.power_bars_offer || self.power_bars_asked == Some(want) {
-            return;
-        }
-        self.power_bars_asked = Some(want);
-        let mut w = Writer::op(OP_POWER_BARS);
-        w.u32(want as u32);
-        self.send(&w.data);
-    }
-
-    /// Quest Markers: a server that offered quest marks
-    /// ([`OP_QUEST_MARKERS`]) is told whether to send them (`want`), at once
-    /// and whenever that changes; one that made no offer is told nothing.
-    /// Off, the set it sent is forgotten.
-    pub fn agree_quest_marks(&mut self, want: bool) {
-        if !want {
-            self.quest_marks.clear();
-        }
-        if !self.quest_marks_offer || self.quest_marks_asked == Some(want) {
-            return;
-        }
-        self.quest_marks_asked = Some(want);
-        let mut w = Writer::op(OP_QUEST_MARKERS);
-        w.u32(want as u32);
-        self.send(&w.data);
-    }
-
-    /// Quest Tracker: a server that offered the tracker
-    /// ([`OP_QUEST_PROGRESS`]) is told whether to send it (`want`), as
-    /// `agree_quest_marks` tells it of the marks. Off, the tracker it sent is
-    /// forgotten.
-    pub fn agree_quest_progress(&mut self, want: bool) {
-        if !want {
-            self.quest_progress.clear();
-        }
-        if !self.quest_progress_offer || self.quest_progress_asked == Some(want) {
-            return;
-        }
-        self.quest_progress_asked = Some(want);
-        let mut w = Writer::op(OP_QUEST_PROGRESS);
-        w.u32(want as u32);
-        self.send(&w.data);
-    }
-
-    /// Voice Chat: a server that offered voice ([`crate::voice::OP_VOICE`])
-    /// is told whether this client has it on ([`crate::voice::FLAG_ON`]), at
-    /// once and whenever that changes; one that made no offer is told
-    /// nothing. Off, the roster, the lobby, the servers and the signals it
-    /// sent are forgotten.
-    pub fn agree_voice(&mut self, flags: u32) {
-        let flags = flags & crate::voice::FLAG_ON;
-        if flags == 0 {
-            self.voice_roster.clear();
-            self.voice_lobby = None;
-            self.voice_room_states.clear();
-            self.voice_ice = None;
-            self.voice_in.clear();
-            self.voice_parts.clear();
-        }
-        if !self.voice_offer || self.voice_asked == Some(flags) {
-            return;
-        }
-        self.voice_asked = Some(flags);
-        let mut w = Writer::op(crate::voice::OP_VOICE);
-        w.u32(flags);
-        self.send(&w.data);
-    }
-
-    /// Whether this session told the server it has voice on.
-    pub fn voice_on(&self) -> bool {
-        self.voice_asked.is_some_and(|f| f & crate::voice::FLAG_ON != 0)
-    }
-
-    /// The voice lobby ([`crate::voice::OP_VOICE_ROOM`]), while voice is on:
-    /// a room joined (its name and H, empty for an open one; unlisted, when
-    /// the join makes it), left, or the lobby asked for.
-    pub fn voice_room_join(&mut self, name: &str, hash: &str, unlisted: bool) {
-        if self.voice_on() {
-            self.send(&crate::voice::encode_join(name, hash, unlisted));
-        }
-    }
-
-    pub fn voice_room_op(&mut self, op: u8) {
-        if self.voice_on() {
-            self.send(&crate::voice::encode_room_op(op));
-        }
-    }
-
-    /// The rooms' answers ([`crate::voice::OP_VOICE_ROOM_STATE`]: the result
-    /// and the room's name) since the last call.
-    pub fn take_voice_room_states(&mut self) -> Vec<(u8, String)> {
-        std::mem::take(&mut self.voice_room_states)
-    }
-
-    /// A WebRTC signal to the forwarding server
-    /// ([`crate::voice::OP_VOICE_SIGNAL`], in parts as long as it takes), when
-    /// this session has voice on.
-    pub fn send_voice_signal(&mut self, kind: u8, text: &str) {
-        if !self.voice_on() {
-            return;
-        }
-        self.voice_seq = self.voice_seq.wrapping_add(1);
-        for m in crate::voice::encode_signal(self.voice_seq, kind, text) {
-            self.send(&m);
-        }
-    }
-
-    /// The signals come in whole since the last call: (peer, kind, text).
-    pub fn take_voice_signals(&mut self) -> Vec<(u8, String)> {
-        std::mem::take(&mut self.voice_in)
-    }
-
-    /// A whole signal as if the server had sent it (a test's, the game's own
-    /// tests driving voice without a server).
-    pub fn voice_signal_came(&mut self, kind: u8, text: &str) {
-        self.voice_in.push((kind, text.to_string()));
-    }
-
-    /// The power of 255 the server last sent for entity `id`
-    /// ([`OP_POWER_BARS_DATA`]), if it sent one.
-    pub fn power_of(&self, id: u32) -> Option<u8> {
-        self.power_bars.iter().find(|&&(i, _)| i == id).map(|&(_, p)| p)
-    }
-
+    /// `SendOpcodeByte(op, v)`.
     pub fn send_op_byte(&mut self, op: u16, v: u8) {
         if op == 0x000E {
             self.chat_mode = v;
@@ -851,6 +653,21 @@ impl Session {
         (self.start.elapsed().as_micros() as i64).saturating_mul(98_304) / 100_000_000
     }
 
+    /// The game connection as a report's trace gives it: the datagrams sent,
+    /// the connection's own counters (`VINetStats`' eleven, those not 0), and
+    /// how far the server has acknowledged the 0x40 (state channel 0x40, sent
+    /// to and acknowledged to): what tells a server that has the player's
+    /// 0x40s but leaves the player out of its world from a link that stopped.
+    pub fn net_line(&self) -> String {
+        let Some(c) = self.conn.filter(|&c| self.drdp.conns.contains(c)) else {
+            return format!("net: {} datagrams sent, no game connection", self.packets_sent);
+        };
+        let k = &self.drdp.conns[c];
+        let counts: Vec<String> = k.cstat.iter().zip(drdp::CSTAT_LABELS).filter(|(n, _)| **n != 0).map(|(n, label)| format!("{n} {label}")).collect();
+        let own = k.channels.as_ref().and_then(|v| v.get(0x40)).map_or("; no 0x40 sent".to_string(), |ch| format!("; the 0x40 sent to {}, acknowledged to {}", ch.tx.wrapping_sub(1), ch.tx_ack));
+        format!("net: {} datagrams sent; the game connection: {}{own}", self.packets_sent, counts.join(", "))
+    }
+
     /// `VIClient::UpdateTimeOfDay`: the hour, clock B (0x0013's second
     /// reading, blended forward on the local timer) modulo 3,600,000 of its
     /// units as 24 hours, as `VIScene::SetTimeOfDay` clamps it; none until
@@ -866,6 +683,8 @@ impl Session {
         let t = self.now();
         self.drdp.set_time(t);
         while let Some((buf, ip, port)) = self.socket.recv_from() {
+            self.datagrams_in += 1;
+            self.last_datagram = Some(Instant::now());
             let n = buf.len();
             let mut d = ip.to_vec();
             d.extend(port.to_le_bytes());
@@ -904,6 +723,8 @@ impl Session {
     /// The flush `pump` ends with, and the sends: what was sent goes out now
     /// (Quit's logout, before the client leaves).
     pub fn flush(&mut self) {
+        // TickNet and Process: Msg0790Done, then drdp_flush
+        self.msg_0790_done();
         self.drdp.flush();
         for p in std::mem::take(&mut self.drdp.outbox) {
             if self.debug {
@@ -947,24 +768,6 @@ impl Session {
                 self.conn = m.connection;
                 self.self_id = None;
                 self.entity_view_offer = None;
-                self.power_bars_offer = false;
-                self.power_bars_asked = None;
-                self.power_bars.clear();
-                self.quest_marks_offer = false;
-                self.quest_marks_asked = None;
-                self.quest_marks.clear();
-                self.quest_progress_offer = false;
-                self.quest_progress_asked = None;
-                self.quest_progress.clear();
-                self.voice_offer = false;
-                self.voice_asked = None;
-                self.voice_ice = None;
-                self.voice_ttl = 0;
-                self.voice_roster.clear();
-                self.voice_lobby = None;
-                self.voice_room_states.clear();
-                self.voice_in.clear();
-                self.voice_parts.clear();
                 ev.push(Event::Promoted);
             }
             drdp::TYPE_DISCONNECT => {
@@ -981,8 +784,57 @@ impl Session {
                 ev.push(Event::Disconnected(reason));
             }
             ty if ty < drdp::TYPE_STATE_CHANNELS => ev.push(Event::State { channel: ty, data: m.data }),
+            // ProcessMessageF8: a datagram outside any connection (drdp
+            // port 0xffff) comes as type 0xF8; its 0x0993 answers the probe
+            0xF8 => self.process_f8(&m),
             _ => {}
         }
+    }
+
+    /// `ProcessMessageF8` and `Msg0993`: the probe's token coming back is
+    /// answered with 0x0791 and the token, on the game connection.
+    fn process_f8(&mut self, m: &drdp::Message) {
+        let mut r = Reader::new(&m.data);
+        if r.u16() == 0x0993 {
+            let token = r.u32();
+            if token == self.probe.token {
+                let mut w = Writer::op(0x0791);
+                w.u32(token);
+                self.send(&w.data);
+            }
+        }
+    }
+
+    /// `Msg0790Done`: with a probe set and a game connection, 0x0992 (the
+    /// token, the eight bytes) to the probe's endpoint outside any
+    /// connection (`VINetSendTo`: `drdp_send_addr` to the endpoint's
+    /// address, its drdp port unused), when the connection's timeout (a
+    /// second at most) has gone by since the last, on the game's clock.
+    fn msg_0790_done(&mut self) {
+        let Some(c) = self.conn.filter(|&c| self.drdp.conns.contains(c)) else { return };
+        let timeout = (self.drdp.conns[c].timeout as i64).min(1000);
+        let now = self.timer();
+        if self.probe.endpoint != -1 && now >= self.probe.last + timeout {
+            let mut w = Writer::op(0x0992);
+            w.u32(self.probe.token).u64(self.probe.data);
+            let (to, _) = drdp::endpoint_to_address(self.probe.endpoint as u64);
+            self.drdp.send_addr(&[to], &w.data);
+            self.probe.last = now;
+        }
+    }
+
+    /// `Msg07E0`: 0x07E1, the game connection's eleven counters as text
+    /// (`VINetStats`: "%I: %s\n" each, the count as a signed 64-bit
+    /// number), then whatever followed 0x07E0, on the game connection. Both
+    /// Sandstorm and go-eqoa-server send 0x07E0 once a session, and a PS2
+    /// answers (`pcaps/ps2_sandstorm.pcap`).
+    fn msg_07e0(&mut self, rest: &[u8]) {
+        let Some(c) = self.conn.filter(|&c| self.drdp.conns.contains(c)) else { return };
+        let cstat = self.drdp.conns[c].cstat;
+        let text: String = cstat.iter().zip(drdp::CSTAT_LABELS).map(|(&n, label)| format!("{}: {label}\n", n as i64)).collect();
+        let mut w = Writer::op(0x07E1);
+        w.wide(&text).bytes(rest);
+        self.send(&w.data);
     }
 
     /// `ProcessMessage`: one opcode.
@@ -991,6 +843,15 @@ impl Session {
         let op = r.u16();
         match op {
             0x0000 => ev.push(Event::Version(r.u32())),
+            0x07E0 => self.msg_07e0(&m.data[2.min(m.data.len())..]),
+            0x0790 => {
+                // Msg0790: the probe, sent at once if due
+                let endpoint = r.u64() as i64;
+                let token = r.u32();
+                let data = r.u64();
+                self.probe = Probe { endpoint, token, data, last: -1 };
+                self.msg_0790_done();
+            }
             0x07D1 => {
                 self.expansion = r.u32();
                 ev.push(Event::Expansion(self.expansion));
@@ -1002,95 +863,30 @@ impl Session {
                     self.entity_view_offer = Some((slots, view));
                 }
             }
-            OP_POWER_BARS => {
-                // an offer (again at every world entry): told afresh what
-                // the client wants, the server's player being a new one
-                r.u32();
+            // the trigger names offered: taken (the TEST menu shows them)
+            OP_GM_TRIGGERS => {
+                if r.u32() != 0 && !r.error {
+                    self.send_op_int(OP_GM_TRIGGERS, 1);
+                }
+            }
+            // the live duel's messages offered: taken (the client has the
+            // window, `duel`)
+            OP_DUEL_WINDOW => {
+                if r.u32() != 0 && !r.error {
+                    self.send_op_int(OP_DUEL_WINDOW, 1);
+                }
+            }
+            // the live game's look offered: taken (this client reads it),
+            // unless a test's `EQOA_LIVE_LOOK=0` keeps the disc's
+            OP_LIVE_LOOK => {
+                if r.u32() & 1 != 0 && !r.error && wants_live_look() {
+                    self.send_op_int(OP_LIVE_LOOK, 1);
+                }
+            }
+            OP_LIVE_LOOK_IN_FORCE => {
+                let v = r.u32();
                 if !r.error {
-                    self.power_bars_offer = true;
-                    self.power_bars_asked = None;
-                }
-            }
-            OP_POWER_BARS_DATA => {
-                let n = r.u8() as usize;
-                let set: Vec<(u32, u8)> = (0..n).map(|_| (r.u32(), r.u8())).collect();
-                if !r.error {
-                    self.power_bars = set;
-                }
-            }
-            OP_QUEST_MARKERS => {
-                // an offer (again at every world entry): told afresh
-                r.u32();
-                if !r.error {
-                    self.quest_marks_offer = true;
-                    self.quest_marks_asked = None;
-                }
-            }
-            OP_QUEST_MARKERS_DATA => {
-                if let Some(set) = read_quest_marks(&mut r) {
-                    self.quest_marks = set;
-                }
-            }
-            OP_QUEST_PROGRESS => {
-                // an offer (again at every world entry): told afresh
-                r.u32();
-                if !r.error {
-                    self.quest_progress_offer = true;
-                    self.quest_progress_asked = None;
-                }
-            }
-            OP_QUEST_PROGRESS_DATA => {
-                if let Some(set) = read_quest_progress(&mut r) {
-                    self.quest_progress = set;
-                }
-            }
-            crate::voice::OP_VOICE => {
-                // an offer (again at every world entry): told afresh
-                r.u32();
-                if !r.error {
-                    self.voice_offer = true;
-                    self.voice_asked = None;
-                }
-            }
-            crate::voice::OP_VOICE_CONFIG => {
-                if let Some((ice, ttl)) = crate::voice::decode_config(&mut r)
-                    && self.voice_on()
-                {
-                    self.voice_ice = Some(ice);
-                    self.voice_ttl = ttl;
-                }
-            }
-            crate::voice::OP_VOICE_ROSTER => {
-                if let Some(roster) = crate::voice::decode_roster(&mut r)
-                    && self.voice_on()
-                {
-                    self.voice_roster = roster;
-                }
-            }
-            crate::voice::OP_VOICE_LOBBY => {
-                if let Some(rooms) = crate::voice::decode_lobby(&mut r)
-                    && self.voice_on()
-                {
-                    self.voice_lobby = Some(rooms);
-                }
-            }
-            crate::voice::OP_VOICE_ROOM_STATE => {
-                if let Some(st) = crate::voice::decode_room_state(&mut r)
-                    && self.voice_on()
-                    && self.voice_room_states.len() < 64
-                {
-                    self.voice_room_states.push(st);
-                }
-            }
-            crate::voice::OP_VOICE_SIGNAL => {
-                if let Some((seq, kind, part, parts, chunk)) = crate::voice::decode_signal(&mut r)
-                    && self.voice_on()
-                    && let Some(whole) = self.voice_parts.take(seq, kind, part, parts, chunk)
-                {
-                    // a bounded queue: a flood is let go, not kept
-                    if self.voice_in.len() < 256 {
-                        self.voice_in.push(whole);
-                    }
+                    self.live_look = v & 1 != 0;
                 }
             }
             0x0013 => {
@@ -1104,7 +900,7 @@ impl Session {
             }
             0x002C if matches!(self.state, State::Shard | State::Characters) => {
                 self.state = State::Characters;
-                ev.push(Event::Characters(read_characters(&mut r)));
+                ev.push(Event::Characters(read_characters(&mut r, self.live_look)));
             }
             0x0012 if self.state == State::Characters => ev.push(Event::RandomName(String::from_utf8_lossy(&r.string(24)).into_owned())),
             0x002E if self.state == State::Characters => ev.push(Event::CreateRefused(269)),
@@ -1405,7 +1201,17 @@ pub fn new_char_message(c: &NewChar) -> Vec<u8> {
     w.data
 }
 
-fn read_characters(r: &mut Reader) -> Vec<Character> {
+/// Whether to take the live game's look when a server offers it: always, but
+/// for a test's `EQOA_LIVE_LOOK=0`, which keeps the disc's (a PS2's view of
+/// the same server).
+fn wants_live_look() -> bool {
+    std::env::var("EQOA_LIVE_LOOK").map_or(true, |v| v != "0")
+}
+
+/// `CharacterList`: the disc's records, or with `live` the live game's
+/// ([`LIVE_GEAR_SIZE`] raw bytes each).
+fn read_characters(r: &mut Reader, live: bool) -> Vec<Character> {
+    let gear = if live { LIVE_GEAR_SIZE } else { DISC_GEAR_SIZE };
     let n = r.signed().clamp(0, 8) as usize;
     (0..n)
         .map(|_| {
@@ -1414,7 +1220,7 @@ fn read_characters(r: &mut Reader) -> Vec<Character> {
             for v in &mut f {
                 *v = r.signed();
             }
-            let gear = r.bytes(32).to_vec();
+            let gear = r.bytes(gear).to_vec();
             Character {
                 name,
                 server_id: f[0],
@@ -1493,6 +1299,55 @@ pub fn hour_of(clock: &SyncTime, now: i64) -> Option<vi::fpu::F<Ee>> {
 
 #[cfg(test)]
 mod tests {
+
+    /// A session through the gateway to IPv4 (`addr::Nat64`), over real
+    /// sockets on the IPv6 loopback: a server at [::1] is IPv4 0.0.0.1 under
+    /// the prefix ::/96; a datagram to 0.0.0.1 reaches it, and its answer
+    /// comes back as from 0.0.0.1. (Skipped where there is no IPv6 loopback.)
+    #[test]
+    fn a_datagram_goes_through_the_gateway_and_back() {
+        let Ok(server) = UdpSocket::bind("[::1]:0") else { return };
+        let at = server.local_addr().unwrap();
+        let (n, ip) = Nat64::of(&at).unwrap();
+        assert_eq!(ip, [0, 0, 0, 1]);
+        let socket = UdpSocket::bind("[::]:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        socket.set_nonblocking(true).unwrap();
+        let mut udp = Udp { socket, buf: vec![0u8; 2048], nat64: Some(n) };
+        udp.send_to(b"hello", ip, at.port());
+        server.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+        let mut b = [0u8; 16];
+        let (k, from) = server.recv_from(&mut b).unwrap();
+        assert_eq!((&b[..k], from.port()), (&b"hello"[..], port));
+        server.send_to(b"answer", from).unwrap();
+        let mut got = None;
+        for _ in 0..200 {
+            if let Some(d) = udp.recv_from() {
+                got = Some(d);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(got, Some((b"answer".to_vec(), [0, 0, 0, 1], at.port())));
+    }
+    /// The DRDP clock starts low: the wall clock at 2026-10-28 00:58 UTC,
+    /// past 2^31 as a u32, starts it below 2^30, so 12 days of a session
+    /// stay below 2^31 and it never wraps, its low 16 bits (the drdp port)
+    /// the wall clock's as before; any wall clock does. The control: the
+    /// whole u32 started past 2^31.
+    #[test]
+    fn the_clock_starts_below_2_pow_30() {
+        let today: u128 = 1_793_149_080_000;
+        let b = super::clock_base(today);
+        assert!(b < 1 << 30, "{b}");
+        assert_eq!(b & 0xFFFF, today as u32 & 0xFFFF, "the port's bits");
+        assert!(b + 12 * 24 * 3_600_000 < 1 << 31, "12 days");
+        assert!(today as u32 >= 1 << 31, "the control: the u32 itself");
+        for wall in [0u128, 1, (1 << 30) - 1, 1 << 30, 1 << 31, (1 << 32) - 1, 1 << 32, u64::MAX as u128, u128::MAX] {
+            assert!(super::clock_base(wall) < 1 << 30, "{wall}");
+        }
+    }
+
     /// `VISyncTime` as visynctime.cpp has it: the first reading taken as it
     /// is and read forward on the local clock; a later one blended in over
     /// 60,000 of it (half the difference halfway, all of it after), never
@@ -1610,6 +1465,26 @@ mod tests {
         assert!(matches!(&ev[..], [Event::Chat(t, c)] if t == "hi" && *c == [1.0; 4]), "{ev:?}");
     }
 
+    // 0x069E, the group's chat (a u32, then the line), is a chat line in
+    // blue, as CLIENT's dispatcher adds it in (.5, .5, 1). The control: the
+    // same words on 0x0A7A are white.
+    #[test]
+    fn a_group_line_is_a_blue_chat_line() {
+        let text = "Dairine tells the group: meet at the west gate";
+        let mut v = 0x069Eu16.to_le_bytes().to_vec();
+        v.extend(0x0001_4F51u32.to_le_bytes());
+        v.extend((text.encode_utf16().count() as u32).to_le_bytes());
+        v.extend(text.encode_utf16().flat_map(|c| c.to_le_bytes()));
+        let mut s = session();
+        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, v);
+        assert!(matches!(&ev[..], [Event::Chat(t, c)] if t == text && *c == [0.5, 0.5, 1.0, 1.0]), "{ev:?}");
+        let mut w = 0x0A7Au16.to_le_bytes().to_vec();
+        w.extend((text.encode_utf16().count() as u32).to_le_bytes());
+        w.extend(text.encode_utf16().flat_map(|c| c.to_le_bytes()));
+        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, w);
+        assert!(matches!(&ev[..], [Event::Chat(t, c)] if t == text && *c == [1.0; 4]), "the control: {ev:?}");
+    }
+
     /// 0x0013 (`SetTime`) sets both clocks at the local timer's now, and the
     /// time of day is clock B's; none before it came (the control).
     #[test]
@@ -1670,6 +1545,108 @@ mod tests {
             let ev = deliver(&mut s, drdp::TYPE_DISCONNECT, vec![byte]);
             assert!(matches!(ev[..], [Event::Disconnected(r)] if r == reason), "{byte}: {ev:?}");
         }
+    }
+
+    // A report's net line: the datagrams sent, the game connection's counters
+    // not 0, and the 0x40 channel sent to and acknowledged to (a 0x40 sent and
+    // flushed is sent to 1, acknowledged to 0 until the server's ack; none
+    // before the first). The control: with no game connection, it says so.
+    #[test]
+    fn the_net_line_says_how_far_the_0x40_is_acknowledged() {
+        let mut s = session();
+        let before = s.net_line();
+        assert!(before.ends_with("; no 0x40 sent"), "{before}");
+        s.send_state(0x40, &[1, 2, 3]);
+        s.flush();
+        let line = s.net_line();
+        assert!(line.starts_with(&format!("net: {} datagrams sent; the game connection: ", s.packets_sent)), "{line}");
+        assert!(line.contains(" sent") && line.contains("the 0x40 sent to 1, acknowledged to 0"), "{line}");
+        s.conn = None;
+        assert_eq!(s.net_line(), format!("net: {} datagrams sent, no game connection", s.packets_sent));
+    }
+
+    // 0x07E0 is answered with 0x07E1: the game connection's eleven counters
+    // as VINetStats writes them, then what followed 0x07E0. The counters of
+    // the PS2's own answer in pcaps/ps2_sandstorm.pcap (packet 115, 512
+    // bytes after the opcode, a count of 254 characters) give that answer's
+    // text exactly. Controls: trailing bytes are echoed after the text, and
+    // with no game connection nothing is sent.
+    #[test]
+    fn stats_are_answered_as_a_ps2_answers_them() {
+        let mut s = session();
+        s.record = Some(Vec::new());
+        let c = s.conn.unwrap();
+        s.drdp.conns[c].cstat = [0, 0, 0, 0, 0, 62, 19, 148, 290, 24, 56];
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0xE0, 0x07]);
+        let sent = s.record.take().unwrap();
+        assert_eq!(sent.len(), 1, "{sent:02x?}");
+        let (ty, d) = &sent[0];
+        assert_eq!(*ty, drdp::TYPE_GUARANTEED);
+        assert_eq!(d[..2], [0xE1, 0x07]);
+        assert_eq!(d.len() - 2, 512, "the capture's payload size");
+        let text = "0: discarded (old)\n0: discarded (no memory was available to process message)\n0: discarded (corrupt)\n0: discarded (crc)\n0: out of sequence\n62: recv\n19: sent\n148: guaranteed recv (duplicates)\n290: guaranteed recv\n24: state recv (duplicates)\n56: state recv\n";
+        assert_eq!(d[2..6], 254u32.to_le_bytes(), "the capture's count");
+        let wide: Vec<u8> = text.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        assert_eq!(d[6..], wide[..]);
+
+        // control: what followed the opcode comes after the text
+        s.record = Some(Vec::new());
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0xE0, 0x07, 1, 2, 3]);
+        let sent = s.record.take().unwrap();
+        assert_eq!(sent[0].1[sent[0].1.len() - 3..], [1, 2, 3]);
+        assert_eq!(sent[0].1.len(), 2 + 512 + 3);
+
+        // control: no game connection, nothing sent
+        let mut s = session();
+        s.conn = None;
+        s.record = Some(Vec::new());
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0xE0, 0x07]);
+        assert_eq!(s.record.unwrap(), []);
+    }
+
+    // 0x0790's probe: 0x0992 (the token, the eight bytes) outside any
+    // connection to the endpoint 0x0790 names, at once and then no more
+    // often than the connection's timeout (a second); 0x0993 coming back
+    // as a type 0xF8 with the token is answered with 0x0791 on the game
+    // connection. Controls: no probe, no 0x0992; a second flush within the
+    // timeout sends none; a wrong token is not answered.
+    #[test]
+    fn a_probe_is_sent_and_its_echo_answered() {
+        let mut s = session();
+        // the game's clock well on, as it is in play
+        s.start -= std::time::Duration::from_secs(20);
+        s.drdp.outbox.clear();
+        s.msg_0790_done();
+        assert!(s.drdp.outbox.is_empty(), "control: no probe, no 0x0992");
+
+        let endpoint = address_to_endpoint([10, 0, 0, 9], 5555, 0x1234);
+        let mut w = Writer::op(0x0790);
+        w.u64(endpoint).u32(0xAABB_CCDD).u64(0x1122_3344_5566_7788);
+        deliver(&mut s, drdp::TYPE_GUARANTEED, w.data);
+        assert_eq!(s.probe.endpoint, endpoint as i64);
+        let probes: Vec<_> = s.drdp.outbox.drain(..).collect();
+        assert_eq!(probes.len(), 1, "sent at once: {probes:02x?}");
+        assert_eq!(probes[0].to, drdp::Addr { ip: [10, 0, 0, 9], port: 5555 });
+        let mut want = vec![0xff, 0xff, 0x92, 0x09];
+        want.extend(0xAABB_CCDDu32.to_le_bytes());
+        want.extend(0x1122_3344_5566_7788u64.to_le_bytes());
+        assert_eq!(probes[0].data, want, "drdp port 0xffff, no CRC");
+
+        s.msg_0790_done();
+        assert!(s.drdp.outbox.is_empty(), "control: not again within the timeout");
+        s.start -= std::time::Duration::from_millis(1100);
+        s.msg_0790_done();
+        assert_eq!(s.drdp.outbox.drain(..).count(), 1, "again a timeout on");
+
+        s.record = Some(Vec::new());
+        let mut w = Writer::op(0x0993);
+        w.u32(0x1234_5678);
+        deliver(&mut s, 0xF8, w.data);
+        assert_eq!(s.record.as_deref(), Some(&[][..]), "control: a wrong token");
+        let mut w = Writer::op(0x0993);
+        w.u32(0xAABB_CCDD);
+        deliver(&mut s, 0xF8, w.data);
+        assert_eq!(s.record.unwrap(), [(drdp::TYPE_GUARANTEED, vec![0x91, 0x07, 0xDD, 0xCC, 0xBB, 0xAA])]);
     }
 
     /// Every datagram sent, kept.
@@ -1800,231 +1777,141 @@ mod tests {
         assert_eq!(s.entity_view_offer, None, "a new connection, no offer yet");
     }
 
-    // go-eqoa-server's 0x7E01 offer: nothing is asked before it, the answer
-    // goes once for each change of mind (1 to have the power, 0 to stop), and
-    // a new offer (a world entry) is answered afresh. Its 0x7E02 set replaces
-    // the last whole; a short one is not taken; off, or on a new connection,
-    // there is none.
+    // go-eqoa-server's offers and sets past 0x7E00 (0x7E01-0x7E06) are
+    // opcodes this client has no case for, as CLIENT's dispatcher has none:
+    // each passed on as one (play reads none of them) and nothing answered.
+    // The control: the same look finds the answer to 0x7E00's offer.
     #[test]
-    fn power_bars_offer_answer_and_set() {
+    fn the_servers_other_offers_go_unanswered() {
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut s = Session::connect_with(Box::new(Rec(sent.clone())), ([127, 0, 0, 1], 40000), ([127, 0, 0, 1], 10070), "test", [0; 32]).unwrap();
         let answers = |s: &mut Session| -> Vec<(u8, Vec<u8>)> {
             s.flush();
-            let m = sent.borrow().iter().flat_map(|d| messages(d)).filter(|(_, d)| d.starts_with(&[0x01, 0x7E])).collect();
+            let m = sent.borrow().iter().flat_map(|d| messages(d)).filter(|(ty, d)| *ty == 251 && d.get(1) == Some(&0x7E)).collect();
             sent.borrow_mut().clear();
             m
         };
-        s.agree_power_bars(true);
-        assert_eq!(answers(&mut s), [], "no offer, nothing asked");
-        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x01, 0x7E, 1, 0, 0, 0]);
-        assert!(ev.is_empty(), "{ev:?}");
-        assert!(s.power_bars_offer);
-        s.agree_power_bars(true);
-        s.agree_power_bars(true);
-        assert_eq!(answers(&mut s), [(251, vec![0x01, 0x7E, 1, 0, 0, 0])], "asked once");
-        s.agree_power_bars(false);
-        assert_eq!(answers(&mut s), [(251, vec![0x01, 0x7E, 0, 0, 0, 0])], "and stopped");
-        s.agree_power_bars(true);
-        assert_eq!(answers(&mut s), [(251, vec![0x01, 0x7E, 1, 0, 0, 0])]);
+        answers(&mut s);
+        for op in [0x7E01u16, 0x7E02, 0x7E03, 0x7E04, 0x7E05, 0x7E06] {
+            let mut m = op.to_le_bytes().to_vec();
+            m.extend([1, 0, 0, 0]);
+            let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, m);
+            assert!(matches!(&ev[..], [Event::Opcode { op: o, .. }] if *o == op), "{op:#06x}: {ev:?}");
+        }
+        assert_eq!(answers(&mut s), [], "nothing answered");
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x00, 0x7E, 204, 0, 0, 0, 0xE8, 0x03, 0, 0]);
+        assert_eq!(s.entity_view_offer, Some((204, 1000)), "0x7E00's offer still taken");
+        s.send_entity_view(24, 100);
+        assert_eq!(answers(&mut s), [(251, vec![0x00, 0x7E, 24, 0, 0, 0, 100, 0, 0, 0])], "the control: 0x7E00's answer");
+    }
 
-        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x02, 0x7E, 2, 0xA1, 0x86, 1, 0, 63, 0xEA, 3, 0, 0x7F, 255]);
-        assert!(ev.is_empty(), "{ev:?}");
-        assert_eq!((s.power_of(100001), s.power_of(0x7F0003EA), s.power_of(100002)), (Some(63), Some(255), None));
-        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x02, 0x7E, 2, 0xA1, 0x86, 1, 0, 9]);
-        assert_eq!(s.power_of(100001), Some(63), "a short set is not taken");
-        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x02, 0x7E, 1, 0xA2, 0x86, 1, 0, 9]);
-        assert_eq!((s.power_of(100001), s.power_of(100002)), (None, Some(9)), "each set is the whole set");
+    // go-eqoa-server's offer of the live game's look (0x7E0C) is answered
+    // with 1 at once; the server's answer (0x7E0D) decides how the character
+    // lists after it are read: the disc's 32 raw bytes a record until it says
+    // 1, the live game's 71 after, the disc's again after a 0. It is kept
+    // through the world's connection, as the server keeps it for the
+    // session. The control: a list that comes before the server's answer is
+    // the disc's, though this client asked already.
+    #[test]
+    fn live_look_offer_answer_and_lists() {
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut s = Session::connect_with(Box::new(Rec(sent.clone())), ([127, 0, 0, 1], 40000), ([127, 0, 0, 1], 10070), "test", [0; 32]).unwrap();
+        let answers = |s: &mut Session| -> Vec<(u8, Vec<u8>)> {
+            s.flush();
+            let m = sent.borrow().iter().flat_map(|d| messages(d)).filter(|(ty, d)| *ty == 251 && d.get(1) == Some(&0x7E)).collect();
+            sent.borrow_mut().clear();
+            m
+        };
+        let list = |gear: usize| {
+            let mut w = Writer::op(0x002C);
+            w.signed(1).u32(4).bytes(b"Dyed");
+            for v in [17, 0x70D8_98C6, 13, 3, 42, 1, 2, 3, 2] {
+                w.signed(v);
+            }
+            w.bytes(&vec![0xAB; gear]);
+            w.data
+        };
+        let gear_of = |ev: &[Event]| match ev {
+            [Event::Characters(c)] => c.iter().map(|c| c.gear.len()).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        answers(&mut s);
+        s.state = State::Shard;
+        assert_eq!(gear_of(&deliver(&mut s, drdp::TYPE_GUARANTEED, list(DISC_GEAR_SIZE))), [32], "a first list: the disc's");
+        assert!(deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x0C, 0x7E, 1, 0, 0, 0]).is_empty());
+        assert_eq!(answers(&mut s), [(251, vec![0x0C, 0x7E, 1, 0, 0, 0])], "the offer answered with 1");
+        assert!(!s.live_look, "not in force until the server says so");
+        assert_eq!(gear_of(&deliver(&mut s, drdp::TYPE_GUARANTEED, list(DISC_GEAR_SIZE))), [32], "the control: a list before the server's answer");
 
-        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x01, 0x7E, 1, 0, 0, 0]);
-        s.agree_power_bars(true);
-        assert_eq!(answers(&mut s), [(251, vec![0x01, 0x7E, 1, 0, 0, 0])], "a new offer, asked again");
-        s.agree_power_bars(false);
-        assert_eq!(s.power_of(100002), None, "off: the set forgotten");
-
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x0D, 0x7E, 1, 0, 0, 0]);
+        assert!(s.live_look);
+        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, list(LIVE_GEAR_SIZE));
+        assert_eq!(gear_of(&ev), [71], "the live game's list");
+        if let [Event::Characters(c)] = &ev[..] {
+            assert_eq!((c[0].name.as_str(), c[0].level, c[0].face), ("Dyed", 42, 2));
+        }
         deliver(&mut s, drdp::TYPE_CONNECT, Vec::new());
-        assert!(!s.power_bars_offer && s.power_bars.is_empty(), "a new connection, no offer yet");
-        s.agree_power_bars(true);
-        assert_eq!(answers(&mut s), [], "and nothing asked");
+        assert!(s.live_look, "kept through the world's connection");
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x0D, 0x7E, 0, 0, 0, 0]);
+        assert!(!s.live_look, "the server went back to the disc's");
+        assert_eq!(answers(&mut s), [], "nothing answered but the offer");
     }
 
-    // Quest marks (go-eqoa-server's 0x7E03/0x7E04): nothing asked without an
-    // offer; an offer answered once for each change of mind; a set read whole
-    // (a giver's "!" with its quest's levels, offer and rewards), a short one
-    // not taken, off forgotten.
+    // go-eqoa-server's offer of the GM's trigger names (0x7E07) is answered
+    // with 1 at once, every time it comes, and its names (0x7E08) are passed
+    // on for the TEST menu with nothing answered. The controls: an offer cut
+    // short and an offer of 0 are not answered.
     #[test]
-    fn quest_marks_offer_answer_and_set() {
+    fn the_trigger_names_offer_is_answered() {
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut s = Session::connect_with(Box::new(Rec(sent.clone())), ([127, 0, 0, 1], 40000), ([127, 0, 0, 1], 10070), "test", [0; 32]).unwrap();
         let answers = |s: &mut Session| -> Vec<(u8, Vec<u8>)> {
             s.flush();
-            let m = sent.borrow().iter().flat_map(|d| messages(d)).filter(|(_, d)| d.starts_with(&[0x03, 0x7E])).collect();
+            let m = sent.borrow().iter().flat_map(|d| messages(d)).filter(|(ty, d)| *ty == 251 && d.get(1) == Some(&0x7E)).collect();
             sent.borrow_mut().clear();
             m
         };
-        s.agree_quest_marks(true);
-        assert_eq!(answers(&mut s), [], "no offer, nothing asked");
-        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x03, 0x7E, 1, 0, 0, 0]);
-        s.agree_quest_marks(true);
-        s.agree_quest_marks(true);
-        assert_eq!(answers(&mut s), [(251, vec![0x03, 0x7E, 1, 0, 0, 0])], "asked once");
-
-        let text = |b: &mut Vec<u8>, t: &str| {
-            b.push(t.len() as u8);
-            b.extend_from_slice(t.as_bytes());
-        };
-        let mut m = vec![0x04, 0x7E, 1, 1, 0];
-        m.extend_from_slice(&25403.5f32.to_le_bytes());
-        m.extend_from_slice(&15725.5f32.to_le_bytes());
-        text(&mut m, "Malsis");
-        m.push(1);
-        text(&mut m, "The pincers");
-        m.extend_from_slice(&[1, 10]);
-        text(&mut m, "You there.");
-        text(&mut m, "430 XP, Smoldering Aura");
-        deliver(&mut s, drdp::TYPE_GUARANTEED, m.clone());
-        assert_eq!(
-            s.quest_marks,
-            [QuestMark {
-                kind: 1,
-                world: 0,
-                x: 25403.5,
-                z: 15725.5,
-                npc: "Malsis".into(),
-                quests: vec![MarkQuest { name: "The pincers".into(), levels: (1, 10), line: "You there.".into(), detail: "430 XP, Smoldering Aura".into() }],
-            }]
-        );
-        deliver(&mut s, drdp::TYPE_GUARANTEED, m[..m.len() - 4].to_vec());
-        assert_eq!(s.quest_marks.len(), 1, "a short set is not taken");
-        s.agree_quest_marks(false);
-        assert_eq!(answers(&mut s), [(251, vec![0x03, 0x7E, 0, 0, 0, 0])], "and stopped");
-        assert!(s.quest_marks.is_empty(), "off: the set forgotten");
+        answers(&mut s);
+        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x07, 0x7E, 1, 0, 0]);
+        assert!(ev.is_empty(), "{ev:?}");
+        assert_eq!(answers(&mut s), [], "the control: an offer cut short");
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x07, 0x7E, 0, 0, 0, 0]);
+        assert_eq!(answers(&mut s), [], "the control: an offer of 0");
+        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x07, 0x7E, 1, 0, 0, 0]);
+        assert!(ev.is_empty(), "the offer is the session's: {ev:?}");
+        assert_eq!(answers(&mut s), [(251, vec![0x07, 0x7E, 1, 0, 0, 0])]);
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x07, 0x7E, 1, 0, 0, 0]);
+        assert_eq!(answers(&mut s), [(251, vec![0x07, 0x7E, 1, 0, 0, 0])], "again for another offer");
+        let names = vec![0x08, 0x7E, 1, 2, 1, 3, b'O', b'n', b'e'];
+        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, names);
+        assert!(matches!(&ev[..], [Event::Opcode { op: 0x7E08, data }] if data[..] == [1, 2, 1, 3, b'O', b'n', b'e']), "{ev:?}");
+        assert_eq!(answers(&mut s), [], "the names answered nothing");
     }
 
-    /// The quest tracker's offer is answered once, its body read whole (the
-    /// counts, a goal done only counted and all there), a short one not
-    /// taken (the control), and off it is stopped and forgotten.
+    // go-eqoa-server's offer of the live duel's messages (0x7E09) is answered
+    // with 1 at once, every time it comes, and passed on as nothing. The
+    // controls: an offer cut short and an offer of 0 are not answered.
     #[test]
-    fn quest_progress_offer_answer_and_set() {
+    fn the_duel_window_offer_is_answered() {
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut s = Session::connect_with(Box::new(Rec(sent.clone())), ([127, 0, 0, 1], 40000), ([127, 0, 0, 1], 10070), "test", [0; 32]).unwrap();
         let answers = |s: &mut Session| -> Vec<(u8, Vec<u8>)> {
             s.flush();
-            let m = sent.borrow().iter().flat_map(|d| messages(d)).filter(|(_, d)| d.starts_with(&[0x05, 0x7E])).collect();
+            let m = sent.borrow().iter().flat_map(|d| messages(d)).filter(|(ty, d)| *ty == 251 && d.get(1) == Some(&0x7E)).collect();
             sent.borrow_mut().clear();
             m
         };
-        s.agree_quest_progress(true);
-        assert_eq!(answers(&mut s), [], "no offer, nothing asked");
-        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x05, 0x7E, 1, 0, 0, 0]);
-        s.agree_quest_progress(true);
-        s.agree_quest_progress(true);
-        assert_eq!(answers(&mut s), [(251, vec![0x05, 0x7E, 1, 0, 0, 0])], "asked once");
-        let text = |b: &mut Vec<u8>, t: &str| {
-            b.push(t.len() as u8);
-            b.extend_from_slice(t.as_bytes());
-        };
-        let mut m = vec![0x06, 0x7E, 1];
-        text(&mut m, "Bat eyes");
-        m.push(2);
-        text(&mut m, "Bat Eye");
-        m.extend_from_slice(&[1, 0, 3, 0]);
-        text(&mut m, "Give to Kellina");
-        m.extend_from_slice(&[0, 0, 0, 0]);
-        deliver(&mut s, drdp::TYPE_GUARANTEED, m.clone());
-        let want = [TrackedQuest { name: "Bat eyes".into(), goals: vec![QuestGoal { text: "Bat Eye".into(), have: 1, need: 3 }, QuestGoal { text: "Give to Kellina".into(), have: 0, need: 0 }] }];
-        assert_eq!(s.quest_progress, want);
-        assert!(!s.quest_progress[0].goals[0].done() && !s.quest_progress[0].goals[1].done(), "1 of 3, and nothing counted");
-        assert!(QuestGoal { text: String::new(), have: 3, need: 3 }.done());
-        deliver(&mut s, drdp::TYPE_GUARANTEED, m[..m.len() - 2].to_vec());
-        assert_eq!(s.quest_progress, want, "a short one is not taken");
-        s.agree_quest_progress(false);
-        assert_eq!(answers(&mut s), [(251, vec![0x05, 0x7E, 0, 0, 0, 0])], "and stopped");
-        assert!(s.quest_progress.is_empty(), "off: forgotten");
-    }
-
-    // go-eqoa-server's voice (0x7E10-0x7E16): nothing is told a server that
-    // made no offer; the answer goes once a change of mind; the lobby's ops
-    // only while voice is on; the servers, the roster, the lobby and the
-    // rooms' answers are taken only while voice is on; a long signal goes in
-    // parts and one coming in parts is taken whole; off forgets them; a new
-    // connection is a new start (the controls: before the offer and after it
-    // went, nothing is sent).
-    #[test]
-    fn voice_offer_answer_config_roster_lobby_and_signals() {
-        use crate::voice::*;
-        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut s = Session::connect_with(Box::new(Rec(sent.clone())), ([127, 0, 0, 1], 40000), ([127, 0, 0, 1], 10070), "test", [0; 32]).unwrap();
-        // what the session hands the connection (DRDP sends it as acks allow)
-        s.record = Some(Vec::new());
-        let ours = |s: &mut Session| -> Vec<Vec<u8>> {
-            let m = s.record.replace(Vec::new()).unwrap_or_default();
-            m.into_iter().map(|(_, d)| d).filter(|d| d.len() >= 2 && d[1] == 0x7E && (0x10..=0x16).contains(&d[0])).collect()
-        };
-        s.agree_voice(FLAG_ON);
-        s.voice_room_join("Raid", "", false);
-        s.send_voice_signal(KIND_OFFER, "v=0");
-        assert_eq!(ours(&mut s), Vec::<Vec<u8>>::new(), "no offer: nothing told, nothing signalled");
-        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x10, 0x7E, 1, 0, 0, 0]);
-        assert!(s.voice_offer);
-        // the config before voice is on is not taken
-        let ice = vec![WireIce { url: "turn:104.156.237.19:3479?transport=udp".into(), username: "1:2".into(), credential: "x".into() }];
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_config(&ice, 600));
-        assert_eq!(s.voice_ice, None, "taken before voice was on");
-        s.voice_room_op(ROOM_LIST);
-        assert_eq!(ours(&mut s), Vec::<Vec<u8>>::new(), "no lobby before voice is on");
-        s.agree_voice(FLAG_ON);
-        s.agree_voice(FLAG_ON | 2);
-        assert_eq!(ours(&mut s), vec![vec![0x10, 0x7E, 1, 0, 0, 0]], "told once; no other bit");
-        s.voice_room_join("Raid", "", true);
-        s.voice_room_op(ROOM_LEAVE);
-        s.voice_room_op(ROOM_LIST);
-        assert_eq!(ours(&mut s), vec![encode_join("Raid", "", true), vec![0x14, 0x7E, 2], vec![0x14, 0x7E, 3]]);
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_config(&[], 600));
-        assert_eq!(s.voice_ice, Some(Vec::new()), "a server with no fallback relay still answered");
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_config(&ice, 600));
-        let roster = vec![WireMember { peer: 9, name: "Jibrish".into(), channels: CHANNEL_GROUP }];
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_roster(&roster));
-        assert_eq!((s.voice_ice.clone(), s.voice_ttl, s.voice_roster.clone()), (Some(ice.clone()), 600, roster.clone()));
-        let rooms = vec![WireRoom { name: "Raid".into(), members: 2, locked: false }];
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_lobby(&rooms));
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_room_state(ROOM_IN, "Raid"));
-        assert_eq!(s.voice_lobby, Some(rooms.clone()));
-        assert_eq!(s.take_voice_room_states(), [(ROOM_IN, "Raid".to_string())]);
-        assert!(s.take_voice_room_states().is_empty(), "taken once");
-
-        // out: a description of 2,000 bytes in three parts, one seq
-        let sdp: String = "a".repeat(2000);
-        s.send_voice_signal(KIND_OFFER, &sdp);
-        let out = ours(&mut s);
-        assert_eq!(out.len(), 3);
-        assert!(out.iter().all(|m| m[..2] == [0x13, 0x7E]));
-        let seqs: Vec<u32> = out.iter().map(|m| u32::from_le_bytes(m[2..6].try_into().unwrap())).collect();
-        assert!(seqs.iter().all(|&q| q == seqs[0]), "one message number");
-        // in: the parts out of order, taken whole once
-        let parts = encode_signal(77, KIND_ANSWER, &sdp);
-        deliver(&mut s, drdp::TYPE_GUARANTEED, parts[2].clone());
-        deliver(&mut s, drdp::TYPE_GUARANTEED, parts[0].clone());
-        assert!(s.take_voice_signals().is_empty(), "not whole yet");
-        deliver(&mut s, drdp::TYPE_GUARANTEED, parts[1].clone());
-        assert_eq!(s.take_voice_signals(), vec![(KIND_ANSWER, sdp.clone())]);
-        assert!(s.take_voice_signals().is_empty(), "taken once");
-
-        s.agree_voice(0);
-        assert_eq!(ours(&mut s), vec![vec![0x10, 0x7E, 0, 0, 0, 0]], "and off");
-        assert!(s.voice_roster.is_empty() && s.voice_ice.is_none() && s.voice_lobby.is_none(), "off: forgotten");
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_roster(&roster));
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_lobby(&rooms));
-        deliver(&mut s, drdp::TYPE_GUARANTEED, encode_room_state(ROOM_LEFT, "Raid"));
-        assert!(s.voice_roster.is_empty() && s.voice_lobby.is_none() && s.take_voice_room_states().is_empty(), "none taken while off");
-        s.send_voice_signal(KIND_BYE, "");
-        s.voice_room_join("Raid", "", false);
-        assert_eq!(ours(&mut s), Vec::<Vec<u8>>::new(), "nothing signalled, no room while off");
-
-        deliver(&mut s, drdp::TYPE_CONNECT, Vec::new());
-        assert!(!s.voice_offer, "a new connection, no offer yet");
-        s.agree_voice(FLAG_ON);
-        assert_eq!(ours(&mut s), Vec::<Vec<u8>>::new(), "and nothing told");
+        answers(&mut s);
+        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x09, 0x7E, 1, 0, 0]);
+        assert!(ev.is_empty(), "{ev:?}");
+        assert_eq!(answers(&mut s), [], "the control: an offer cut short");
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x09, 0x7E, 0, 0, 0, 0]);
+        assert_eq!(answers(&mut s), [], "the control: an offer of 0");
+        let ev = deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x09, 0x7E, 1, 0, 0, 0]);
+        assert!(ev.is_empty(), "the offer is the session's: {ev:?}");
+        assert_eq!(answers(&mut s), [(251, vec![0x09, 0x7E, 1, 0, 0, 0])]);
+        deliver(&mut s, drdp::TYPE_GUARANTEED, vec![0x09, 0x7E, 1, 0, 0, 0]);
+        assert_eq!(answers(&mut s), [(251, vec![0x09, 0x7E, 1, 0, 0, 0])], "again for another offer (each world entry)");
     }
 
     // Msg000D's world entry is ONE datagram, as every PS2 capture's is: 0x0014,
